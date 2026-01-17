@@ -1,17 +1,21 @@
 {
   "name": "claude-dispatch",
-  "version": "1.0.0",
-  "description": "Manage and communicate with Claude Code instances via Slack",
+  "version": "1.1.0",
+  "description": "Manage and communicate with Claude Code or OpenCode instances via Slack",
   "main": "src/bot.js",
   "scripts": {
     "start": "node src/bot.js",
-    "dev": "node --watch src/bot.js"
+    "start:opencode": "node src/opencode-bot.js",
+    "dev": "node --watch src/bot.js",
+    "dev:opencode": "node --watch src/opencode-bot.js"
   },
   "keywords": [
     "claude",
+    "opencode",
     "slack",
     "cli",
-    "automation"
+    "automation",
+    "ai"
   ],
   "author": "Bobum",
   "license": "MIT",

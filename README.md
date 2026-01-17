@@ -1,6 +1,8 @@
 # Claude Dispatch
 
-Control Claude Code from Slack. Start coding sessions on your desktop and interact with them from your phone.
+Control Claude Code or OpenCode from Slack. Start coding sessions on your desktop and interact with them from your phone.
+
+> **New:** OpenCode support! Use any of 75+ AI providers (OpenAI, Anthropic, Google, etc.) instead of just Claude Code. See [OPENCODE_SETUP.md](./OPENCODE_SETUP.md).
 
 ## Quick Start (AI-Assisted Setup)
 
@@ -17,11 +19,12 @@ The agent will walk you through each step interactively, create your config file
 
 ## What This Does
 
-- Start/stop Claude Code instances from Slack
-- Send messages to Claude from any device
+- Start/stop Claude Code or OpenCode instances from Slack
+- Send messages to AI from any device
 - Get responses back in Slack (no tool output noise)
 - Manage multiple project instances simultaneously
 - Maintain conversation context across messages
+- **OpenCode version**: Choose from 75+ AI providers (OpenAI, Anthropic, Google, local models, etc.)
 
 ## Architecture
 
@@ -59,9 +62,16 @@ The agent will walk you through each step interactively, create your config file
 Before starting, ensure you have:
 
 - [ ] Node.js 18+ installed
-- [ ] Claude Code CLI installed and authenticated (`claude --version` works)
 - [ ] A Slack workspace where you can create apps
 - [ ] Admin or app-creation permissions in that workspace
+
+**For Claude Code version:**
+- [ ] Claude Code CLI installed and authenticated (`claude --version` works)
+
+**For OpenCode version:**
+- [ ] OpenCode CLI installed (`opencode --version` works)
+- [ ] At least one AI provider configured (`opencode auth login`)
+- [ ] See [OPENCODE_SETUP.md](./OPENCODE_SETUP.md) for detailed setup
 
 ---
 
@@ -271,6 +281,40 @@ Each message spawns a new Claude process and resumes the session. This takes 2-5
 4. Claude's response is parsed from stdout (stream-json format)
 5. Only text responses are forwarded to Slack (tool calls are filtered)
 6. Session persistence means Claude remembers the conversation
+
+---
+
+## Running OpenCode Version
+
+For OpenCode instead of Claude Code:
+
+```bash
+# Install dependencies
+npm install
+
+# Start OpenCode bot
+npm run start:opencode
+```
+
+The OpenCode version uses different slash commands to avoid conflicts:
+- `/opencode-start` instead of `/claude-start`
+- `/opencode-stop` instead of `/claude-stop`
+- `/opencode-list` instead of `/claude-list`
+- `/opencode-send` instead of `/claude-send`
+
+See [OPENCODE_SETUP.md](./OPENCODE_SETUP.md) for complete setup instructions.
+
+---
+
+## Choosing Between Claude Code and OpenCode
+
+| Feature | Claude Code | OpenCode |
+|---------|-------------|----------|
+| AI Providers | Anthropic only | 75+ (OpenAI, Anthropic, Google, etc.) |
+| Local Models | No | Yes (Ollama) |
+| Pricing | Claude pricing | Your chosen provider |
+| Session Storage | Claude's cache | Local SQLite |
+| Setup Complexity | Lower | Slightly higher |
 
 ---
 
