@@ -1,0 +1,21 @@
+{
+  "name": "claude-dispatch",
+  "version": "1.0.0",
+  "description": "Manage and communicate with Claude Code instances via Slack",
+  "main": "src/bot.js",
+  "scripts": {
+    "start": "node src/bot.js",
+    "dev": "node --watch src/bot.js"
+  },
+  "keywords": [
+    "claude",
+    "slack",
+    "cli",
+    "automation"
+  ],
+  "author": "Bobum",
+  "license": "MIT",
+  "dependencies": {
+    "@slack/bolt": "^3.17.0"
+  }
+}
