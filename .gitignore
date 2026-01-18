@@ -3,3 +3,7 @@ node_modules/
 *.log
 .DS_Store
 .claude/
+
+# Node.js portable install (for development)
+node20/
+node20.zip
