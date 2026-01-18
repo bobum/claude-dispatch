@@ -1,21 +1,26 @@
 {
   "name": "claude-dispatch",
-  "version": "2.0.0",
-  "description": "Manage and communicate with Claude Code instances via Slack or Microsoft Teams",
+  "version": "2.1.0",
+  "description": "Manage and communicate with Claude Code or OpenCode instances via Slack or Microsoft Teams",
   "main": "src/bot.js",
   "scripts": {
     "start": "node src/bot.js",
     "start:teams": "node src/teams-bot.js",
+    "start:opencode": "node src/opencode-bot.js",
     "dev": "node --watch src/bot.js",
-    "dev:teams": "node --watch src/teams-bot.js"
+    "dev:teams": "node --watch src/teams-bot.js",
+    "dev:opencode": "node --watch src/opencode-bot.js",
+    "test": "node --test tests/*.test.js"
   },
   "keywords": [
     "claude",
+    "opencode",
     "slack",
     "teams",
     "microsoft",
     "cli",
-    "automation"
+    "automation",
+    "ai"
   ],
   "author": "Bobum",
   "license": "MIT",
