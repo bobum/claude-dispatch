@@ -384,7 +384,7 @@ async function botLogic(context) {
 
           if (result.success && result.responses.length > 0) {
             for (const response of result.responses) {
-              await postToTeams(context, response);
+              await postToTeams(context, `**[${instanceId}]**\n\n${response}`);
             }
           } else if (!result.success) {
             await context.sendActivity({
@@ -468,7 +468,7 @@ async function botLogic(context) {
 
       if (result.success && result.responses.length > 0) {
         for (const response of result.responses) {
-          await postToTeams(context, response);
+          await postToTeams(context, `**[${targetInstanceId}]**\n\n${response}`);
         }
       } else if (!result.success) {
         await context.sendActivity({
