@@ -127,13 +127,10 @@ describe('Instance Manager', () => {
       const args = manager.buildArgs('Hello', '/project', 'session-123', true);
 
       assert.ok(args.includes('run'));
-      assert.ok(args.includes('-p'));
-      assert.ok(args.includes('Hello'));
-      assert.ok(args.includes('-f'));
+      assert.ok(args.includes('--format'));
       assert.ok(args.includes('json'));
-      assert.ok(args.includes('-q'));
-      assert.ok(args.includes('-c'));
-      assert.ok(args.includes('/project'));
+      assert.ok(args.includes('--'));
+      assert.ok(args.includes('Hello'));
       assert.ok(!args.includes('--session'));
     });
 

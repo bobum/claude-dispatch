@@ -53,14 +53,8 @@ async function sendToInstance(instanceId, message) {
   instance.messageCount++;
 
   // Build command args for OpenCode
-  // opencode run -p "prompt" -f json -q [--session <id>] [-c <dir>]
-  const args = [
-    'run',
-    '-p', message,
-    '-f', 'json',     // JSON output format
-    '-q',             // Quiet mode (no spinner)
-    '-c', instance.projectDir  // Working directory
-  ];
+  // opencode run --format json [--session <id>] [-m model] -- <message>
+  const args = ['run', '--format', 'json'];
 
   // Add session continuation for subsequent messages
   if (!isFirstMessage) {
@@ -72,10 +66,12 @@ async function sendToInstance(instanceId, message) {
     args.push('-m', OPENCODE_MODEL);
   }
 
+  args.push('--', message);
+
   return new Promise((resolve) => {
     const proc = spawn('opencode', args, {
       cwd: instance.projectDir,
-      shell: true,
+      shell: false,
       env: { ...process.env }
     });
 

@@ -173,22 +173,6 @@ function createErrorCard(title, message) {
   });
 }
 
-function createThinkingCard() {
-  return CardFactory.adaptiveCard({
-    type: 'AdaptiveCard',
-    $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
-    version: '1.4',
-    body: [
-      {
-        type: 'TextBlock',
-        text: '🤔 Thinking...',
-        weight: 'Bolder',
-        isSubtle: true
-      }
-    ]
-  });
-}
-
 // ============================================
 // HELPER FUNCTIONS
 // ============================================
