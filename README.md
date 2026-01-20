@@ -1,156 +1,226 @@
-# Claude Dispatch
+<div align="center">
 
-Control Claude Code or OpenCode from Slack or Microsoft Teams. Start coding sessions on your desktop and interact with them from your phone.
+# 🚀 Open Dispatch
 
-> **New in v2.1:** Microsoft Teams support + OpenCode integration! See [TEAMS_SETUP.md](./TEAMS_SETUP.md) for Teams setup or [OPENCODE_SETUP.md](./OPENCODE_SETUP.md) for OpenCode.
+### Control AI Coding Assistants from Anywhere
 
-## Quick Start (AI-Assisted Setup)
+**Slack** · **Microsoft Teams** · **75+ AI Providers** · **Works from Your Phone**
 
-**Point an LLM at this README and let it guide you through setup.**
-
-```
-Open this project in Claude Code and say:
-"Help me set up Claude Dispatch following the README"
-```
-
-The agent will walk you through each step interactively, create your config files, and verify everything works.
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Node.js 18+](https://img.shields.io/badge/Node.js-18+-brightgreen.svg)](https://nodejs.org)
+[![OpenCode Compatible](https://img.shields.io/badge/OpenCode-Compatible-blue.svg)](https://github.com/opencode-ai/opencode)
 
 ---
 
-## What This Does
+*Start a coding session on your desktop. Guide it from your phone.*
 
-- Start/stop Claude Code or OpenCode instances from Slack
-- Send messages to AI from any device
-- Get responses back in Slack (no tool output noise)
-- Manage multiple project instances simultaneously
-- Maintain conversation context across messages
-- **OpenCode version**: Choose from 75+ AI providers (OpenAI, Anthropic, Google, local models, etc.)
+[Quick Start](#-quick-start) · [Features](#-features) · [Setup](#-setup-choose-your-path) · [Commands](#-commands) · [Architecture](#-architecture)
 
-## Architecture
+</div>
 
-### Slack Mode (Socket Mode)
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Your Desktop                              │
-│                                                              │
-│  ┌──────────────┐      ┌──────────────────────────────────┐ │
-│  │ Claude Code  │◄────►│                                  │ │
-│  │ Instance 1   │      │       Claude Dispatch            │ │
-│  └──────────────┘      │                                  │ │
-│                        │  - Spawns Claude per message     │ │
-│  ┌──────────────┐      │  - Resumes sessions for context  │ │
-│  │ Claude Code  │◄────►│  - Filters to text responses     │ │
-│  │ Instance 2   │      │  - Routes Slack ↔ Claude         │ │
-│  └──────────────┘      └─────────────┬────────────────────┘ │
-│                                      │                      │
-└──────────────────────────────────────┼──────────────────────┘
-                                       │ Socket Mode
-                                       ▼
-                              ┌─────────────────┐
-                              │   Slack API     │
-                              └────────┬────────┘
-                                       │
-                                       ▼
-                              ┌─────────────────┐
-                              │   Your Phone    │
-                              └─────────────────┘
-```
+---
 
-### Teams Mode (Bot Framework)
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Your Desktop                              │
-│                                                              │
-│  ┌──────────────┐      ┌──────────────────────────────────┐ │
-│  │ Claude Code  │◄────►│                                  │ │
-│  │ Instance 1   │      │       Claude Dispatch            │ │
-│  └──────────────┘      │           (Teams)                │ │
-│                        │                                  │ │
-│  ┌──────────────┐      │  - HTTP webhook server          │ │
-│  │ Claude Code  │◄────►│  - Adaptive Cards for UI        │ │
-│  │ Instance 2   │      │  - Routes Teams ↔ Claude        │ │
-│  └──────────────┘      └─────────────┬────────────────────┘ │
-│                                      │                      │
-└──────────────────────────────────────┼──────────────────────┘
-                                       │ HTTPS (ngrok/Azure)
-                                       ▼
-                              ┌─────────────────┐
-                              │ Azure Bot Svc   │
-                              └────────┬────────┘
-                                       │
-                                       ▼
-                              ┌─────────────────┐
-                              │ Microsoft Teams │
-                              └─────────────────┘
+## 🤖 Agent Instructions
+
+> **LLM AGENTS: Read this section first. These are your instructions for helping users set up Open Dispatch.**
+
+```yaml
+TASK: Help user set up Open Dispatch
+CONTEXT: Bridge app connecting chat platforms (Slack/Teams) to AI coding assistants (OpenCode/Claude)
+
+SETUP FLOW:
+1. Ask user: "Which chat platform? (Slack or Teams)"
+2. Ask user: "Which AI backend? (OpenCode for 75+ providers, or Claude Code)"
+3. Verify prerequisites are installed (see Prerequisites section)
+4. Guide through platform-specific setup (create app, get tokens)
+5. Create .env file with collected credentials
+6. Run appropriate start command
+7. Test with /od-start command in chat
+
+KEY COMMANDS:
+- npm start                    → Slack + Claude Code
+- npm run start:opencode       → Slack + OpenCode (RECOMMENDED)
+- npm run start:teams          → Teams + Claude Code
+- npm run start:teams:opencode → Teams + OpenCode
+
+SLASH COMMANDS (in chat):
+- /od-start <name> <path>  → Start instance
+- /od-stop <name>          → Stop instance
+- /od-list                 → List instances
+- /od-send <name> <msg>    → Send to specific instance
+
+TROUBLESHOOTING:
+- "appToken" error → Missing SLACK_APP_TOKEN in .env
+- No response → Bot not invited to channel, or /od-start not run
+- "Instance not found" → Bot restarted, run /od-start again
+
+SUCCESS CRITERIA: User can /od-start an instance and send messages from their phone
 ```
 
 ---
 
-## Prerequisites
+## ✨ Features
 
-Before starting, ensure you have:
-
-- [ ] Node.js 18+ installed
-
-**For Slack:**
-- [ ] A Slack workspace where you can create apps
-- [ ] Admin or app-creation permissions in that workspace
-
-**For Teams:**
-- [ ] Microsoft 365 account with Teams access
-- [ ] Access to Teams Developer Portal (dev.teams.microsoft.com)
-- [ ] See [TEAMS_SETUP.md](./TEAMS_SETUP.md) for full Teams requirements
-
-**For Claude Code version:**
-- [ ] Claude Code CLI installed and authenticated (`claude --version` works)
-
-**For OpenCode version:**
-- [ ] OpenCode CLI installed (`opencode --version` works)
-- [ ] At least one AI provider configured (`opencode auth login`)
-- [ ] See [OPENCODE_SETUP.md](./OPENCODE_SETUP.md) for detailed setup
+| Feature | Description |
+|---------|-------------|
+| **📱 Mobile Control** | Start coding sessions on desktop, interact from your phone |
+| **🔌 75+ AI Providers** | OpenAI, Anthropic, Google, Groq, Ollama, Azure, AWS Bedrock... |
+| **💬 Slack & Teams** | Native support for both platforms with rich UI |
+| **🔄 Session Persistence** | Conversation context maintained across messages |
+| **📦 Multi-Project** | Run multiple instances simultaneously |
+| **🎯 Smart Routing** | Messages route to correct project based on channel |
+| **🧹 Clean Output** | Only text responses—no tool call noise |
 
 ---
 
-## Setup Instructions (Slack)
+## 🏃 Quick Start
 
-> **Using Teams instead?** See [TEAMS_SETUP.md](./TEAMS_SETUP.md) for Microsoft Teams setup.
-
-### Step 1: Install Dependencies
+### 30-Second Overview
 
 ```bash
-cd claude-dispatch
+# 1. Clone & install
+git clone https://github.com/bobum/open-dispatch.git
+cd open-dispatch
 npm install
+
+# 2. Create .env with your tokens (see Setup section)
+cp .env.example .env
+
+# 3. Start (pick your combo)
+npm run start:opencode    # Slack + OpenCode (recommended)
+
+# 4. In Slack, start a session
+/od-start myproject /path/to/code
+
+# 5. Chat normally—AI responds in channel
 ```
 
-### Step 2: Create Slack App
+**That's it.** Now you can message your AI from anywhere.
 
-1. Go to https://api.slack.com/apps
-2. Click "Create New App" → "From scratch"
-3. Name: `Claude Dispatch`
-4. Select your workspace
-5. Click "Create App"
+---
 
-### Step 3: Enable Socket Mode
+## 🛠 Setup: Choose Your Path
 
-1. In app settings, go to **Socket Mode** (left sidebar)
-2. Toggle **Enable Socket Mode** to ON
-3. Click "Generate" to create an app-level token
-4. Token name: `socket-token`
-5. Add scope: `connections:write`
-6. Click "Generate"
-7. **Copy the token** (starts with `xapp-`) — this is your `SLACK_APP_TOKEN`
+<table>
+<tr>
+<td width="50%" valign="top">
 
-### Step 4: Get Signing Secret
+### 🟢 Slack + OpenCode
+**Best for most users**
 
-1. Go to **Basic Information** (left sidebar)
-2. Scroll to **App Credentials**
-3. **Copy the Signing Secret** — this is your `SLACK_SIGNING_SECRET`
+75+ AI providers, easy setup
 
-### Step 5: Configure Bot Permissions
+```bash
+npm run start:opencode
+```
 
-1. Go to **OAuth & Permissions** (left sidebar)
-2. Scroll to **Bot Token Scopes**
-3. Add these scopes:
+📖 [Full Slack Setup](#slack-setup)
+📖 [OpenCode Setup](./OPENCODE_SETUP.md)
+
+</td>
+<td width="50%" valign="top">
+
+### 🔵 Teams + OpenCode
+**For Microsoft shops**
+
+Same power, Teams UI
+
+```bash
+npm run start:teams:opencode
+```
+
+📖 [Full Teams Setup](./TEAMS_SETUP.md)
+📖 [OpenCode Setup](./OPENCODE_SETUP.md)
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### ⚪ Slack + Claude Code
+**Anthropic-only, simpler**
+
+```bash
+npm start
+```
+
+📖 [Full Slack Setup](#slack-setup)
+
+</td>
+<td valign="top">
+
+### ⚪ Teams + Claude Code
+**Anthropic-only, Teams UI**
+
+```bash
+npm run start:teams
+```
+
+📖 [Full Teams Setup](./TEAMS_SETUP.md)
+
+</td>
+</tr>
+</table>
+
+---
+
+## 📋 Prerequisites
+
+### Required for All Setups
+
+- [ ] **Node.js 18+** — `node --version`
+- [ ] **npm** — `npm --version`
+
+### For OpenCode (Recommended)
+
+- [ ] **OpenCode CLI** — `opencode --version`
+- [ ] **AI Provider configured** — `opencode auth login`
+- [ ] See [OPENCODE_SETUP.md](./OPENCODE_SETUP.md) for provider setup
+
+### For Claude Code
+
+- [ ] **Claude Code CLI** — `claude --version`
+- [ ] Already authenticated with Anthropic
+
+### For Slack
+
+- [ ] Slack workspace with app creation permissions
+
+### For Teams
+
+- [ ] Microsoft 365 account with Teams
+- [ ] ngrok or Azure for webhook endpoint
+- [ ] See [TEAMS_SETUP.md](./TEAMS_SETUP.md)
+
+---
+
+## 🔧 Slack Setup
+
+### Step 1: Create Slack App
+
+1. Go to [api.slack.com/apps](https://api.slack.com/apps)
+2. **Create New App** → **From scratch**
+3. Name: `Open Dispatch`
+4. Select your workspace → **Create App**
+
+### Step 2: Enable Socket Mode
+
+1. **Socket Mode** (sidebar) → Toggle **ON**
+2. **Generate** app-level token
+   - Name: `socket-token`
+   - Scope: `connections:write`
+3. 📋 Copy token (starts with `xapp-`) → This is `SLACK_APP_TOKEN`
+
+### Step 3: Get Signing Secret
+
+1. **Basic Information** (sidebar)
+2. **App Credentials** section
+3. 📋 Copy **Signing Secret** → This is `SLACK_SIGNING_SECRET`
+
+### Step 4: Add Bot Permissions
+
+1. **OAuth & Permissions** (sidebar)
+2. **Bot Token Scopes** → Add:
    - `chat:write`
    - `commands`
    - `channels:history`
@@ -158,227 +228,252 @@ npm install
    - `im:history`
    - `mpim:history`
 
-### Step 6: Install App to Workspace
+### Step 5: Install to Workspace
 
-1. Go to **Install App** (left sidebar)
-2. Click "Install to Workspace"
-3. Authorize the app
-4. **Copy the Bot User OAuth Token** (starts with `xoxb-`) — this is your `SLACK_BOT_TOKEN`
+1. **Install App** (sidebar)
+2. **Install to Workspace** → Authorize
+3. 📋 Copy **Bot User OAuth Token** (starts with `xoxb-`) → This is `SLACK_BOT_TOKEN`
 
-### Step 7: Create Slash Commands
+### Step 6: Create Slash Commands
 
-1. Go to **Slash Commands** (left sidebar)
-2. Create these 4 commands (leave Request URL blank for each):
+1. **Slash Commands** (sidebar)
+2. Create these 4 commands:
 
-| Command | Short Description |
-|---------|-------------------|
-| `/claude-start` | Start a Claude instance |
-| `/claude-stop` | Stop a Claude instance |
-| `/claude-list` | List running instances |
-| `/claude-send` | Send message to instance |
+| Command | Description |
+|---------|-------------|
+| `/od-start` | Start an AI instance |
+| `/od-stop` | Stop an AI instance |
+| `/od-list` | List running instances |
+| `/od-send` | Send message to instance |
 
-### Step 8: Enable Event Subscriptions
+> **Note:** Leave Request URL blank for all (Socket Mode handles it)
 
-1. Go to **Event Subscriptions** (left sidebar)
-2. Toggle **Enable Events** to ON
-3. Expand **Subscribe to bot events**
-4. Add these events:
+### Step 7: Enable Events
+
+1. **Event Subscriptions** (sidebar) → Toggle **ON**
+2. **Subscribe to bot events** → Add:
    - `message.channels`
    - `message.groups`
    - `message.im`
    - `message.mpim`
-5. Click "Save Changes"
+3. **Save Changes**
 
-### Step 9: Create Environment File
-
-Create a `.env` file in the project root:
+### Step 8: Configure & Run
 
 ```bash
+# Create config
 cp .env.example .env
+
+# Edit .env with your tokens:
+SLACK_BOT_TOKEN=xoxb-your-token
+SLACK_SIGNING_SECRET=your-secret
+SLACK_APP_TOKEN=xapp-your-token
+
+# Start
+npm run start:opencode
 ```
 
-Edit `.env` with your three tokens:
-
-```
-SLACK_BOT_TOKEN=xoxb-your-bot-token-here
-SLACK_SIGNING_SECRET=your-signing-secret-here
-SLACK_APP_TOKEN=xapp-your-app-token-here
-```
-
-### Step 10: Start the Bot
+### Step 9: Test It
 
 ```bash
-npm start
-```
-
-You should see:
-```
-Claude Dispatch is running
-Waiting for Slack commands...
-[INFO] socket-mode:SocketModeClient:0 Now connected to Slack
+# In Slack:
+/invite @Open Dispatch          # Invite bot to channel
+/od-start myproject /path/to/code   # Start instance
+"What files are in this project?"   # Chat normally!
 ```
 
 ---
 
-## Usage
+## 💻 Commands
 
-### Set Up a Channel
+### Slash Commands
 
-1. Create or choose a Slack channel for your project (e.g., `#claude-myproject`)
-2. Invite the bot to the channel:
-   ```
-   /invite @Claude Dispatch
-   ```
+| Command | Example | Description |
+|---------|---------|-------------|
+| `/od-start` | `/od-start api ~/projects/api` | Start instance named "api" in that directory |
+| `/od-stop` | `/od-stop api` | Stop the "api" instance |
+| `/od-list` | `/od-list` | Show all running instances |
+| `/od-send` | `/od-send api add tests` | Send message to "api" from any channel |
 
-### Start an Instance
+### Chat Messages
 
-In the channel where you invited the bot:
-```
-/claude-start myproject C:\path\to\project
-```
-
-The bot will confirm and bind to that channel. All messages in that channel now go to Claude.
-
-### Chat with Claude
-
-Just type normally in the channel:
-```
-What files are in this project?
-```
-
-Claude responds in the same channel.
-
-### List Running Instances
+Once an instance is started in a channel, just type normally:
 
 ```
-/claude-list
+What's the project structure?
+Add error handling to the main function
+Run the tests and fix any failures
 ```
 
-Shows all active instances with message counts and uptime.
-
-### Send to Specific Instance
-
-From any channel:
-```
-/claude-send myproject Add error handling to the API
-```
-
-### Stop an Instance
-
-```
-/claude-stop myproject
-```
+The AI responds in the same channel.
 
 ---
 
-## Running as a Service
+## 🏗 Architecture
 
-To keep Claude Dispatch running after logout:
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         YOUR DESKTOP                            │
+│                                                                 │
+│  ┌─────────────┐         ┌────────────────────────────────────┐│
+│  │  OpenCode   │◄───────►│                                    ││
+│  │ Instance 1  │         │         OPEN DISPATCH              ││
+│  └─────────────┘         │                                    ││
+│                          │  • Spawns AI per message           ││
+│  ┌─────────────┐         │  • Maintains session context       ││
+│  │  OpenCode   │◄───────►│  • Filters to text responses       ││
+│  │ Instance 2  │         │  • Routes chat ↔ AI                ││
+│  └─────────────┘         └──────────────┬─────────────────────┘│
+│                                         │                      │
+└─────────────────────────────────────────┼──────────────────────┘
+                                          │
+                         Socket Mode (Slack) / HTTPS (Teams)
+                                          │
+                                          ▼
+                                 ┌─────────────────┐
+                                 │  Slack / Teams  │
+                                 └────────┬────────┘
+                                          │
+                                          ▼
+                                 ┌─────────────────┐
+                                 │   YOUR PHONE    │
+                                 │   📱            │
+                                 └─────────────────┘
+```
 
-### Using PM2
+### How It Works
+
+1. **Start**: `/od-start` creates a session ID and binds channel → project
+2. **Message**: Your chat message is sent to Open Dispatch
+3. **Spawn**: Open Dispatch spawns `opencode` (or `claude`) with session resume
+4. **Process**: AI processes your message with full conversation context
+5. **Filter**: Tool calls are filtered out, only text responses returned
+6. **Reply**: Clean response appears in your chat
+
+---
+
+## ⚡ Running as a Service
+
+### PM2 (Recommended)
 
 ```bash
 npm install -g pm2
-pm2 start src/bot.js --name claude-dispatch
+pm2 start src/opencode-bot.js --name open-dispatch
 pm2 save
 pm2 startup
 ```
 
-### Using Windows Task Scheduler
+### Windows Task Scheduler
 
-Create a task that runs `node C:\path\to\claude-dispatch\src\bot.js` at login.
-
----
-
-## Troubleshooting
-
-### "You must provide an appToken"
-Your `.env` file is missing `SLACK_APP_TOKEN` or it's not being loaded. Verify:
-- `.env` exists in project root
-- Token starts with `xapp-`
-- No extra spaces or quotes around the value
-
-### Bot doesn't respond to messages
-1. Check the bot is invited to the channel
-2. Verify Event Subscriptions are enabled with message events
-3. Check that `/claude-start` was run in that channel
-
-### "Instance not found"
-The instance was stopped or the bot was restarted. Instances don't persist across bot restarts. Run `/claude-start` again.
-
-### Claude responses are slow
-Each message spawns a new Claude process and resumes the session. This takes 2-5 seconds. The "Thinking..." indicator shows while processing.
-
----
-
-## How It Works
-
-1. `/claude-start` creates a session ID and binds a channel to a project directory
-2. When you message the channel, the bot spawns `claude` with `--resume <session-id>`
-3. Your message is sent as JSON via stdin
-4. Claude's response is parsed from stdout (stream-json format)
-5. Only text responses are forwarded to Slack (tool calls are filtered)
-6. Session persistence means Claude remembers the conversation
-
----
-
-## Running Teams Bot
-
-For Microsoft Teams, use the Teams-specific entry point:
-
-```bash
-# Install dependencies (includes Teams SDK)
-npm install
-
-# Start Teams bot
-npm run start:teams
+Create task running at login:
+```
+node C:\path\to\open-dispatch\src\opencode-bot.js
 ```
 
-You'll also need ngrok for local development:
-```bash
-ngrok http 3978
+### Docker
+
+```dockerfile
+FROM node:18-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --production
+COPY . .
+CMD ["npm", "run", "start:opencode"]
 ```
 
-Then update your Teams Developer Portal bot messaging endpoint with the ngrok URL.
+---
 
-See [TEAMS_SETUP.md](./TEAMS_SETUP.md) for complete Teams setup instructions.
+## 🔍 Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| `"You must provide an appToken"` | Check `.env` has `SLACK_APP_TOKEN` starting with `xapp-` |
+| Bot doesn't respond | 1) Invite bot to channel 2) Run `/od-start` in that channel |
+| `"Instance not found"` | Bot was restarted. Run `/od-start` again |
+| Slow responses | Normal—each message spawns process. ~2-5 sec |
+| Teams webhook fails | Check ngrok is running and URL updated in Dev Portal |
 
 ---
 
-## Running OpenCode Version
+## 🎯 Supported AI Providers (OpenCode)
 
-For OpenCode instead of Claude Code:
+OpenCode supports **75+ providers**. Popular ones:
 
+| Provider | Models |
+|----------|--------|
+| **Anthropic** | Claude 3.5 Sonnet, Claude 3 Opus/Sonnet/Haiku |
+| **OpenAI** | GPT-4o, GPT-4 Turbo, o1 |
+| **Google** | Gemini 2.0, Gemini 1.5 Pro |
+| **Groq** | Llama 3, Mixtral (ultra-fast) |
+| **AWS Bedrock** | Claude, Titan, Llama |
+| **Azure OpenAI** | GPT-4, GPT-3.5 |
+| **Ollama** | Any local model |
+
+Configure in `.env`:
 ```bash
-# Install dependencies
-npm install
-
-# Start OpenCode bot
-npm run start:opencode
+OPENCODE_MODEL=anthropic/claude-sonnet-4-20250514
 ```
 
-The OpenCode version uses different slash commands to avoid conflicts:
-- `/opencode-start` instead of `/claude-start`
-- `/opencode-stop` instead of `/claude-stop`
-- `/opencode-list` instead of `/claude-list`
-- `/opencode-send` instead of `/claude-send`
+---
 
-See [OPENCODE_SETUP.md](./OPENCODE_SETUP.md) for complete setup instructions.
+## 📁 Project Structure
+
+```
+open-dispatch/
+├── src/
+│   ├── bot.js              # Slack + Claude Code
+│   ├── opencode-bot.js     # Slack + OpenCode
+│   ├── teams-bot.js        # Teams + Claude Code
+│   ├── teams-opencode-bot.js # Teams + OpenCode
+│   ├── claude-core.js      # Shared instance logic
+│   └── opencode-core.js    # OpenCode-specific logic
+├── tests/
+│   └── opencode-core.test.js  # 40+ tests
+├── teams-manifest/         # Teams app manifest
+├── .env.example           # Config template
+├── OPENCODE_SETUP.md      # OpenCode guide
+├── TEAMS_SETUP.md         # Teams guide
+└── package.json
+```
 
 ---
 
-## Choosing Between Claude Code and OpenCode
+## 🧪 Testing
 
-| Feature | Claude Code | OpenCode |
-|---------|-------------|----------|
-| AI Providers | Anthropic only | 75+ (OpenAI, Anthropic, Google, etc.) |
-| Local Models | No | Yes (Ollama) |
-| Pricing | Claude pricing | Your chosen provider |
-| Session Storage | Claude's cache | Local SQLite |
-| Setup Complexity | Lower | Slightly higher |
+```bash
+npm test
+```
+
+40+ tests covering:
+- Instance lifecycle
+- Output parsing (JSON, ndjson, plaintext)
+- Message chunking
+- Error handling
 
 ---
 
-## License
+## 🤝 Contributing
 
-MIT
+1. Fork the repo
+2. Create feature branch (`git checkout -b feature/awesome`)
+3. Commit changes (`git commit -m 'Add awesome feature'`)
+4. Push (`git push origin feature/awesome`)
+5. Open Pull Request
+
+---
+
+## 📜 License
+
+MIT © [bobum](https://github.com/bobum)
+
+---
+
+<div align="center">
+
+**Built for the [OpenCode](https://github.com/opencode-ai/opencode) community**
+
+⭐ Star this repo if you find it useful!
+
+[Report Bug](https://github.com/bobum/open-dispatch/issues) · [Request Feature](https://github.com/bobum/open-dispatch/issues)
+
+</div>
