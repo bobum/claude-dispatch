@@ -42,8 +42,10 @@ const instanceManager = createInstanceManager({
   model: process.env.OPENCODE_MODEL || null
 });
 
-// User session state: tracks which instance each user has selected
-// Key: aadObjectId (Teams user ID), Value: instanceId
+// User session state: tracks which instance each user has selected.
+// Key: aadObjectId (Teams user ID), Value: instanceId.
+// NOTE: This Map is in-memory only. All selections will be lost if the bot process restarts.
+// For production use, consider backing this with persistent storage (e.g., database or cache).
 const userSelectedInstance = new Map();
 
 // ============================================
@@ -217,7 +219,7 @@ function createInstanceSelectedCard(instanceId, projectDir) {
       },
       {
         type: 'TextBlock',
-        text: 'Your messages will now be sent to this instance. Use `oc-select <name>` to switch.',
+        text: 'Your messages will now be sent to this instance. Use `oc-select <name>` to switch or `oc-clear` to deselect.',
         wrap: true,
         spacing: 'Medium'
       }
@@ -271,7 +273,7 @@ function parseCommand(text) {
   const cleanText = text.replace(/<at>.*?<\/at>/g, '').trim();
 
   // Support oc-*, opencode-*, and claude-* prefixes
-  const commandMatch = cleanText.match(/^(oc-start|oc-stop|oc-list|oc-send|oc-select|oc-chat|opencode-start|opencode-stop|opencode-list|opencode-send|opencode-select|opencode-chat|claude-start|claude-stop|claude-list|claude-send|claude-select|claude-chat)\s*(.*)?$/i);
+  const commandMatch = cleanText.match(/^(oc-start|oc-stop|oc-list|oc-send|oc-select|oc-clear|opencode-start|opencode-stop|opencode-list|opencode-send|opencode-select|opencode-clear|claude-start|claude-stop|claude-list|claude-send|claude-select|claude-clear)\s*(.*)?$/i);
   if (commandMatch) {
     let command = commandMatch[1].toLowerCase();
     // Normalize to oc-* format
@@ -418,29 +420,15 @@ async function botLogic(context) {
           break;
         }
 
-        case 'oc-chat': {
-          const match = args.match(/^(\S+)\s+(.+)$/s);
-          if (!match) {
-            await context.sendActivity({
-              attachments: [createErrorCard('Invalid Usage', 'Usage: `oc-chat <instance-name> <message>`')]
-            });
-            return;
-          }
+        case 'oc-clear': {
+          const userId = getUserId(context);
+          const hadSelection = userSelectedInstance.has(userId);
+          userSelectedInstance.delete(userId);
 
-          const [, instanceId, message] = match;
-
-          await context.sendActivity({ type: ActivityTypes.Typing });
-
-          const result = await instanceManager.sendToInstance(instanceId, message);
-
-          if (result.success && result.responses.length > 0) {
-            for (const response of result.responses) {
-              await postToTeams(context, response);
-            }
-          } else if (!result.success) {
-            await context.sendActivity({
-              attachments: [createErrorCard('Failed to Send', result.error)]
-            });
+          if (hadSelection) {
+            await context.sendActivity('✅ Instance selection cleared. Your messages will no longer be routed automatically.');
+          } else {
+            await context.sendActivity('No instance was selected.');
           }
           break;
         }
@@ -454,9 +442,16 @@ async function botLogic(context) {
     
     let targetInstanceId = null;
     
-    if (selectedInstanceId && instanceManager.getInstance(selectedInstanceId)) {
-      targetInstanceId = selectedInstanceId;
-    } else {
+    if (selectedInstanceId) {
+      if (instanceManager.getInstance(selectedInstanceId)) {
+        targetInstanceId = selectedInstanceId;
+      } else {
+        userSelectedInstance.delete(userId);
+        await context.sendActivity(`⚠️ Your selected instance "${selectedInstanceId}" is no longer running. Selection cleared.`);
+      }
+    }
+    
+    if (!targetInstanceId) {
       const conversationRef = TurnContext.getConversationReference(context.activity);
       const found = getInstanceByConversation(conversationRef);
       if (found) {
@@ -486,8 +481,9 @@ async function botLogic(context) {
         '**Commands:**\n' +
         '- `oc-start <name> <project-path>` - Start a new instance\n' +
         '- `oc-select <name>` - Select an instance to chat with\n' +
+        '- `oc-clear` - Clear your instance selection\n' +
         '- `oc-list` - List running instances\n' +
-        '- `oc-chat <name> <message>` - Send to a specific instance'
+        '- `oc-send <name> <message>` - Send to a specific instance'
       );
     }
   } else if (context.activity.type === ActivityTypes.ConversationUpdate) {
@@ -502,9 +498,10 @@ async function botLogic(context) {
             '**Commands:**\n' +
             '- `oc-start <name> <project-path>` - Start a new instance\n' +
             '- `oc-select <name>` - Select an instance to chat with\n' +
+            '- `oc-clear` - Clear your instance selection\n' +
             '- `oc-stop <name>` - Stop an instance\n' +
             '- `oc-list` - List running instances\n' +
-            '- `oc-chat <name> <message>` - Send to a specific instance'
+            '- `oc-send <name> <message>` - Send to a specific instance'
           );
         }
       }
