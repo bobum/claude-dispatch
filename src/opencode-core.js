@@ -92,13 +92,19 @@ function createInstanceManager(options = {}) {
 
   /**
    * Send a message to an OpenCode instance
+   * @param {string} instanceId - Instance ID
+   * @param {string} message - Message to send
+   * @param {Object} options - Optional settings
+   * @param {Function} [options.onMessage] - Callback for streaming messages: (text: string) => Promise<void>
+   * @returns {Promise<Object>} Result with success, responses, exitCode
    */
-  async function sendToInstance(instanceId, message) {
+  async function sendToInstance(instanceId, message, options = {}) {
     const instance = instances.get(instanceId);
     if (!instance) {
       return { success: false, error: `Instance "${instanceId}" not found` };
     }
 
+    const { onMessage } = options;
     const isFirstMessage = instance.messageCount === 0;
     instance.messageCount++;
 
@@ -126,9 +132,37 @@ function createInstanceManager(options = {}) {
 
       let stdout = '';
       let stderr = '';
+      let lineBuffer = '';
+      const streamedTexts = new Set();
 
       proc.stdout.on('data', (data) => {
-        stdout += data.toString();
+        const chunk = data.toString();
+        stdout += chunk;
+
+        if (onMessage) {
+          lineBuffer += chunk;
+          const lines = lineBuffer.split('\n');
+          lineBuffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const event = JSON.parse(line);
+              const text = extractEventText(event);
+              if (text && !streamedTexts.has(text)) {
+                streamedTexts.add(text);
+                onMessage(text).catch(err => {
+                  console.error('[OpenCode] Error in onMessage callback:', err);
+                });
+              }
+              if (event.sessionID || event.sessionId || event.session_id) {
+                instance.sessionId = event.sessionID || event.sessionId || event.session_id;
+              }
+            } catch (e) {
+              // NDJSON parse error - partial line will be completed on next chunk
+            }
+          }
+        }
       });
 
       proc.stderr.on('data', (data) => {
@@ -136,13 +170,29 @@ function createInstanceManager(options = {}) {
       });
 
       proc.on('close', (code) => {
+        if (onMessage && lineBuffer.trim()) {
+          try {
+            const event = JSON.parse(lineBuffer);
+            const text = extractEventText(event);
+            if (text && !streamedTexts.has(text)) {
+              streamedTexts.add(text);
+              onMessage(text).catch(err => {
+                console.error('[OpenCode] Error in onMessage callback:', err);
+              });
+            }
+          } catch (e) {
+            // NDJSON final buffer parse error
+          }
+        }
+
         const responses = parseOpenCodeOutput(stdout);
 
         if (isFirstMessage && responses.sessionId) {
           instance.sessionId = responses.sessionId;
         }
 
-        resolve({ success: true, responses: responses.texts, exitCode: code });
+        const finalTexts = streamedTexts.size > 0 ? [...streamedTexts] : responses.texts;
+        resolve({ success: true, responses: finalTexts, exitCode: code, streamed: streamedTexts.size > 0 });
       });
 
       proc.on('error', (err) => {

@@ -317,19 +317,22 @@ async function botLogic(context) {
 
           const [, instanceId, message] = match;
 
-          // Send typing indicator
           await context.sendActivity({ type: ActivityTypes.Typing });
 
-          const result = await instanceManager.sendToInstance(instanceId, message);
+          const onMessage = async (text) => {
+            await postToTeams(context, text);
+          };
 
-          if (result.success && result.responses.length > 0) {
-            for (const response of result.responses) {
-              await postToTeams(context, response);
-            }
-          } else if (!result.success) {
+          const result = await instanceManager.sendToInstance(instanceId, message, { onMessage });
+
+          if (!result.success) {
             await context.sendActivity({
               attachments: [createErrorCard('Failed to Send', result.error)]
             });
+          } else if (!result.streamed && result.responses.length > 0) {
+            for (const response of result.responses) {
+              await postToTeams(context, response);
+            }
           }
           break;
         }
@@ -344,19 +347,22 @@ async function botLogic(context) {
     if (found && messageText) {
       console.log(`[DEBUG] Found instance: ${found.instanceId}`);
 
-      // Send typing indicator
       await context.sendActivity({ type: ActivityTypes.Typing });
 
-      const result = await instanceManager.sendToInstance(found.instanceId, messageText);
+      const onMessage = async (text) => {
+        await postToTeams(context, text);
+      };
 
-      if (result.success && result.responses.length > 0) {
-        for (const response of result.responses) {
-          await postToTeams(context, response);
-        }
-      } else if (!result.success) {
+      const result = await instanceManager.sendToInstance(found.instanceId, messageText, { onMessage });
+
+      if (!result.success) {
         await context.sendActivity({
           attachments: [createErrorCard('Error', result.error)]
         });
+      } else if (!result.streamed && result.responses.length > 0) {
+        for (const response of result.responses) {
+          await postToTeams(context, response);
+        }
       }
     } else if (!found && messageText) {
       // No active instance, provide help

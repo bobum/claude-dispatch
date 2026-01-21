@@ -91,17 +91,22 @@ function createInstanceManager(options = {}) {
 
   /**
    * Send a message to a Claude Code instance
+   * @param {string} instanceId - Instance ID
+   * @param {string} message - Message to send
+   * @param {Object} options - Optional settings
+   * @param {Function} [options.onMessage] - Callback for streaming messages: (text: string) => Promise<void>
+   * @returns {Promise<Object>} Result with success, responses, exitCode
    */
-  async function sendToInstance(instanceId, message) {
+  async function sendToInstance(instanceId, message, options = {}) {
     const instance = instances.get(instanceId);
     if (!instance) {
       return { success: false, error: `Instance "${instanceId}" not found` };
     }
 
+    const { onMessage } = options;
     const isFirstMessage = instance.messageCount === 0;
     instance.messageCount++;
 
-    // Build command args for Claude CLI
     const args = [
       '--dangerously-skip-permissions',
       '--output-format', 'stream-json',
@@ -124,26 +129,31 @@ function createInstanceManager(options = {}) {
 
       const rl = readline.createInterface({ input: proc.stdout });
       const responses = [];
+      let streamed = false;
 
       rl.on('line', (line) => {
         try {
           const event = JSON.parse(line);
 
-          // Collect assistant text messages
           if (event.type === 'assistant' && event.message?.content) {
             const text = extractTextContent(event.message.content);
             if (text) {
               responses.push(text);
+              if (onMessage) {
+                streamed = true;
+                onMessage(text).catch(err => {
+                  console.error('[Claude] Error in onMessage callback:', err);
+                });
+              }
             }
           }
         } catch (e) {
-          // Ignore JSON parse errors
+          // JSON parse error
         }
       });
 
       proc.stderr.on('data', (data) => {
         const msg = data.toString();
-        // Filter out the stdin close error which is expected
         if (!msg.includes('Error') || msg.includes('write')) {
           return;
         }
@@ -154,7 +164,7 @@ function createInstanceManager(options = {}) {
         if (code !== 0 && code !== null) {
           console.error(`[${instanceId}] exited with code ${code}`);
         }
-        resolve({ success: true, responses, exitCode: code });
+        resolve({ success: true, responses, exitCode: code, streamed });
       });
 
       proc.on('error', (err) => {
@@ -162,7 +172,6 @@ function createInstanceManager(options = {}) {
         resolve({ success: false, error: err.message });
       });
 
-      // Send the message as JSON
       const input = JSON.stringify({
         type: 'user',
         message: {

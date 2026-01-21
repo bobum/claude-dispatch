@@ -377,19 +377,22 @@ async function botLogic(context) {
 
           const [, instanceId, message] = match;
 
-          // Send typing indicator
           await context.sendActivity({ type: ActivityTypes.Typing });
 
-          const result = await instanceManager.sendToInstance(instanceId, message);
+          const onMessage = async (text) => {
+            await postToTeams(context, `**[${instanceId}]**\n\n${text}`);
+          };
 
-          if (result.success && result.responses.length > 0) {
-            for (const response of result.responses) {
-              await postToTeams(context, `**[${instanceId}]**\n\n${response}`);
-            }
-          } else if (!result.success) {
+          const result = await instanceManager.sendToInstance(instanceId, message, { onMessage });
+
+          if (!result.success) {
             await context.sendActivity({
               attachments: [createErrorCard('Failed to Send', result.error)]
             });
+          } else if (!result.streamed && result.responses.length > 0) {
+            for (const response of result.responses) {
+              await postToTeams(context, `**[${instanceId}]**\n\n${response}`);
+            }
           }
           break;
         }
@@ -464,16 +467,20 @@ async function botLogic(context) {
 
       await context.sendActivity({ type: ActivityTypes.Typing });
 
-      const result = await instanceManager.sendToInstance(targetInstanceId, messageText);
+      const onMessage = async (text) => {
+        await postToTeams(context, `**[${targetInstanceId}]**\n\n${text}`);
+      };
 
-      if (result.success && result.responses.length > 0) {
-        for (const response of result.responses) {
-          await postToTeams(context, `**[${targetInstanceId}]**\n\n${response}`);
-        }
-      } else if (!result.success) {
+      const result = await instanceManager.sendToInstance(targetInstanceId, messageText, { onMessage });
+
+      if (!result.success) {
         await context.sendActivity({
           attachments: [createErrorCard('Error', result.error)]
         });
+      } else if (!result.streamed && result.responses.length > 0) {
+        for (const response of result.responses) {
+          await postToTeams(context, `**[${targetInstanceId}]**\n\n${response}`);
+        }
       }
     } else if (!targetInstanceId && messageText) {
       await context.sendActivity(
