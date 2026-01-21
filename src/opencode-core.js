@@ -133,7 +133,7 @@ function createInstanceManager(options = {}) {
       let stdout = '';
       let stderr = '';
       let lineBuffer = '';
-      const streamedTexts = [];
+      const streamedTexts = new Set();
 
       proc.stdout.on('data', (data) => {
         const chunk = data.toString();
@@ -149,8 +149,8 @@ function createInstanceManager(options = {}) {
             try {
               const event = JSON.parse(line);
               const text = extractEventText(event);
-              if (text && !streamedTexts.includes(text)) {
-                streamedTexts.push(text);
+              if (text && !streamedTexts.has(text)) {
+                streamedTexts.add(text);
                 onMessage(text).catch(err => {
                   console.error('[OpenCode] Error in onMessage callback:', err);
                 });
@@ -174,8 +174,8 @@ function createInstanceManager(options = {}) {
           try {
             const event = JSON.parse(lineBuffer);
             const text = extractEventText(event);
-            if (text && !streamedTexts.includes(text)) {
-              streamedTexts.push(text);
+            if (text && !streamedTexts.has(text)) {
+              streamedTexts.add(text);
               onMessage(text).catch(err => {
                 console.error('[OpenCode] Error in onMessage callback:', err);
               });
@@ -191,8 +191,8 @@ function createInstanceManager(options = {}) {
           instance.sessionId = responses.sessionId;
         }
 
-        const finalTexts = streamedTexts.length > 0 ? streamedTexts : responses.texts;
-        resolve({ success: true, responses: finalTexts, exitCode: code, streamed: streamedTexts.length > 0 });
+        const finalTexts = streamedTexts.size > 0 ? [...streamedTexts] : responses.texts;
+        resolve({ success: true, responses: finalTexts, exitCode: code, streamed: streamedTexts.size > 0 });
       });
 
       proc.on('error', (err) => {
