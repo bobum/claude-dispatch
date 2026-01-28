@@ -26,18 +26,16 @@ function startInstance(instanceId, projectDir, slackChannel) {
     return { success: false, error: `Instance "${instanceId}" already running` };
   }
 
-  const sessionId = randomUUID();
-
   instances.set(instanceId, {
-    sessionId,
+    sessionId: null,  // Will be set from first OpenCode response
     channel: slackChannel,
     projectDir,
     messageCount: 0,
     startedAt: new Date()
   });
 
-  console.log(`[${instanceId}] created session ${sessionId} in ${projectDir}`);
-  return { success: true, sessionId };
+  console.log(`[${instanceId}] created instance in ${projectDir}`);
+  return { success: true };
 }
 
 /**
@@ -56,8 +54,8 @@ async function sendToInstance(instanceId, message) {
   // opencode run --format json [--session <id>] [-m model] -- <message>
   const args = ['run', '--format', 'json'];
 
-  // Add session continuation for subsequent messages
-  if (!isFirstMessage) {
+  // Add session continuation for subsequent messages (only if we have a valid session ID)
+  if (!isFirstMessage && instance.sessionId) {
     args.push('--session', instance.sessionId);
   }
 
@@ -72,6 +70,7 @@ async function sendToInstance(instanceId, message) {
     const proc = spawn('opencode', args, {
       cwd: instance.projectDir,
       shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env }
     });
 
@@ -147,7 +146,9 @@ function parseOpenCodeOutput(output, instanceId) {
     }
   } catch (e) {
     // If JSON parsing fails, try line-by-line (nd-JSON)
-    const lines = output.trim().split('\n');
+    // Also handle concatenated JSON objects (no newlines between them)
+    const normalized = output.trim().replace(/\}\s*\{/g, '}\n{');
+    const lines = normalized.split('\n');
     for (const line of lines) {
       if (!line.trim()) continue;
       try {
@@ -156,8 +157,8 @@ function parseOpenCodeOutput(output, instanceId) {
         if (text) {
           result.texts.push(text);
         }
-        if (event.sessionId || event.session_id) {
-          result.sessionId = event.sessionId || event.session_id;
+        if (event.sessionID || event.sessionId || event.session_id) {
+          result.sessionId = event.sessionID || event.sessionId || event.session_id;
         }
       } catch (lineErr) {
         // If not JSON, treat as plain text
@@ -186,6 +187,9 @@ function extractEventText(event) {
   }
   if (event.type === 'response' && event.text) {
     return event.text;
+  }
+  if (event.type === 'text' && event.part?.text) {
+    return event.part.text;
   }
   if (event.type === 'text' && event.content) {
     return event.content;
@@ -336,7 +340,7 @@ app.command('/od-start', async ({ command, ack, respond }) => {
 
   if (result.success) {
     const modelInfo = OPENCODE_MODEL ? `\nModel: \`${OPENCODE_MODEL}\`` : '';
-    await respond(`Started OpenCode instance *${instanceId}* in \`${projectDir}\`\nSession: \`${result.sessionId}\`${modelInfo}\n\nMessages in this channel will be sent to OpenCode.`);
+    await respond(`Started OpenCode instance *${instanceId}* in \`${projectDir}\`${modelInfo}\n\nMessages in this channel will be sent to OpenCode.`);
   } else {
     await respond(`Failed to start: ${result.error}`);
   }
