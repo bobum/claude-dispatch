@@ -189,6 +189,220 @@ function createBotEngine(options) {
   }
 
   /**
+   * Handle the 'run' command (one-shot Sprite execution)
+   * Usage: /od-run [--image <image>] [--repo <repo>] [--branch <branch>] <task>
+   */
+  async function handleRun(ctx, args) {
+    // Check if backend supports run (has jobs - sprite-core)
+    if (!aiBackend.jobs) {
+      await ctx.reply(
+        `The \`${commandPrefix}-run\` command requires Sprite backend.\n` +
+        `Current backend doesn't support one-shot job execution.`
+      );
+      return;
+    }
+
+    // Parse options and task from args
+    const parsed = parseRunArgs(args);
+
+    if (!parsed.task) {
+      await ctx.reply(
+        `Usage: \`${commandPrefix}-run [--image <image>] [--repo <repo>] [--branch <branch>] <task>\`\n\n` +
+        `**Examples:**\n` +
+        `\`${commandPrefix}-run --repo github.com/user/project "run the tests"\`\n` +
+        `\`${commandPrefix}-run --image my-agent:v1 --repo github.com/user/project "lint the code"\``
+      );
+      return;
+    }
+
+    // Create a temporary instance for this job
+    const instanceId = `run-${Date.now()}`;
+    const projectDir = parsed.repo || 'default';
+
+    const startResult = aiBackend.startInstance(instanceId, projectDir, ctx.channelId);
+    if (!startResult.success) {
+      await ctx.reply(`Failed to start job: ${startResult.error}`);
+      return;
+    }
+
+    // Show initial message
+    if (chatProvider.supportsCards) {
+      await chatProvider.sendCard(ctx.channelId, {
+        title: 'Job Started',
+        color: '#0099ff',
+        fields: [
+          { name: 'Task', value: parsed.task, inline: false },
+          parsed.repo && { name: 'Repo', value: parsed.repo, inline: true },
+          parsed.branch && { name: 'Branch', value: parsed.branch, inline: true },
+          parsed.image && { name: 'Image', value: parsed.image, inline: true }
+        ].filter(Boolean),
+        footer: 'Streaming logs as they arrive...'
+      });
+    } else {
+      let msg = `**Job Started**\nTask: ${parsed.task}`;
+      if (parsed.repo) msg += `\nRepo: ${parsed.repo}`;
+      if (parsed.branch) msg += `\nBranch: ${parsed.branch}`;
+      if (parsed.image) msg += `\nImage: ${parsed.image}`;
+      await ctx.reply(msg);
+    }
+
+    // Show typing indicator
+    await chatProvider.sendTypingIndicator(ctx.channelId);
+
+    // Stream logs back
+    const streamedTexts = new Set();
+    const onMessage = async (text) => {
+      if (streamedTexts.has(text)) return;
+      streamedTexts.add(text);
+      try {
+        await chatProvider.sendLongMessage(ctx.channelId, text);
+      } catch (e) {
+        console.error('[BotEngine] Failed to stream run message:', e);
+      }
+    };
+
+    // Execute the job
+    const result = await aiBackend.sendToInstance(instanceId, parsed.task, {
+      onMessage,
+      repo: parsed.repo,
+      branch: parsed.branch,
+      image: parsed.image
+    });
+
+    // Clean up the temporary instance
+    aiBackend.stopInstance(instanceId);
+
+    // Send final status
+    if (result.success) {
+      if (chatProvider.supportsCards) {
+        const fields = [
+          { name: 'Status', value: 'Completed', inline: true },
+          { name: 'Job ID', value: result.jobId || 'N/A', inline: true }
+        ];
+
+        if (result.artifacts && result.artifacts.length > 0) {
+          fields.push({
+            name: 'Artifacts',
+            value: result.artifacts.map(a => `[${a.name}](${a.url})`).join('\n'),
+            inline: false
+          });
+        }
+
+        await chatProvider.sendCard(ctx.channelId, {
+          title: 'Job Completed',
+          color: '#00ff00',
+          fields
+        });
+      } else {
+        let msg = `**Job Completed** (${result.jobId || 'N/A'})`;
+        if (result.artifacts && result.artifacts.length > 0) {
+          msg += `\n\n**Artifacts:**\n${result.artifacts.map(a => `- ${a.name}: ${a.url}`).join('\n')}`;
+        }
+        await ctx.reply(msg);
+      }
+    } else {
+      if (chatProvider.supportsCards) {
+        await chatProvider.sendCard(ctx.channelId, {
+          title: 'Job Failed',
+          color: '#ff0000',
+          description: result.error,
+          fields: [
+            { name: 'Job ID', value: result.jobId || 'N/A', inline: true }
+          ]
+        });
+      } else {
+        await ctx.reply(`**Job Failed** (${result.jobId || 'N/A'})\nError: ${result.error}`);
+      }
+    }
+  }
+
+  /**
+   * Parse /od-run arguments
+   * @param {string} args - Raw argument string
+   * @returns {Object} Parsed options { image, repo, branch, task }
+   */
+  function parseRunArgs(args) {
+    const result = { image: null, repo: null, branch: null, task: null };
+    let remaining = args.trim();
+
+    // Extract --option value pairs
+    const optionRegex = /--(\w+)\s+(\S+)/g;
+    let match;
+
+    while ((match = optionRegex.exec(remaining)) !== null) {
+      const [fullMatch, option, value] = match;
+      switch (option.toLowerCase()) {
+        case 'image':
+          result.image = value;
+          break;
+        case 'repo':
+          result.repo = value;
+          break;
+        case 'branch':
+          result.branch = value;
+          break;
+      }
+    }
+
+    // Remove all --option value pairs to get the task
+    remaining = remaining.replace(/--\w+\s+\S+/g, '').trim();
+
+    // Task can be quoted or unquoted
+    if (remaining.startsWith('"') && remaining.endsWith('"')) {
+      result.task = remaining.slice(1, -1);
+    } else if (remaining.startsWith("'") && remaining.endsWith("'")) {
+      result.task = remaining.slice(1, -1);
+    } else {
+      result.task = remaining;
+    }
+
+    return result;
+  }
+
+  /**
+   * Handle the 'jobs' command (list Sprite jobs)
+   */
+  async function handleJobs(ctx) {
+    if (!aiBackend.listJobs) {
+      await ctx.reply(`The \`${commandPrefix}-jobs\` command requires Sprite backend.`);
+      return;
+    }
+
+    const jobs = aiBackend.listJobs();
+
+    if (jobs.length === 0) {
+      if (chatProvider.supportsCards) {
+        await chatProvider.sendCard(ctx.channelId, {
+          title: 'No Jobs',
+          description: `Use \`${commandPrefix}-run\` to start a job.`
+        });
+      } else {
+        await ctx.reply('No jobs found.');
+      }
+      return;
+    }
+
+    if (chatProvider.supportsCards) {
+      const fields = jobs.slice(-10).map((job) => ({
+        name: `${job.jobId.substring(0, 8)}... (${job.status})`,
+        value: `${job.repo || 'N/A'}\n${job.artifactCount} artifacts`,
+        inline: false
+      }));
+
+      await chatProvider.sendCard(ctx.channelId, {
+        title: 'Recent Jobs',
+        color: '#0099ff',
+        fields
+      });
+    } else {
+      const lines = jobs.slice(-10).map((job) =>
+        `- **${job.jobId.substring(0, 8)}...** [${job.status}] - ${job.repo || 'N/A'}`
+      );
+      await ctx.reply(`**Recent Jobs:**\n${lines.join('\n')}`);
+    }
+  }
+
+  /**
    * Send a message to an AI instance and handle the response
    */
   async function sendMessageToInstance(ctx, instanceId, message) {
@@ -314,6 +528,12 @@ function createBotEngine(options) {
       case 'send':
         await handleSend(ctx, args);
         break;
+      case 'run':
+        await handleRun(ctx, args);
+        break;
+      case 'jobs':
+        await handleJobs(ctx);
+        break;
       default:
         await ctx.reply(
           `Unknown command: ${command}\n\n` +
@@ -321,7 +541,9 @@ function createBotEngine(options) {
           `- \`${commandPrefix}-start <name> <path>\` - Start an instance\n` +
           `- \`${commandPrefix}-stop <name>\` - Stop an instance\n` +
           `- \`${commandPrefix}-list\` - List instances\n` +
-          `- \`${commandPrefix}-send <name> <message>\` - Send to instance`
+          `- \`${commandPrefix}-send <name> <message>\` - Send to instance\n` +
+          `- \`${commandPrefix}-run [options] <task>\` - Run one-shot job in Sprite\n` +
+          `- \`${commandPrefix}-jobs\` - List recent jobs`
         );
     }
   });
