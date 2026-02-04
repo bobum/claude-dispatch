@@ -39,25 +39,72 @@ function createInstanceManager(options = {}) {
    * @param {string} instanceId - Instance identifier
    * @param {string} projectDir - Project directory (used as repo for Sprites)
    * @param {string} channel - Chat channel ID
-   * @returns {Object} Result with success status
+   * @param {Object} [options] - Additional options
+   * @param {boolean} [options.persistent] - If true, spawn a long-running Sprite
+   * @param {string} [options.image] - Docker image to use
+   * @param {string} [options.branch] - Branch to checkout
+   * @returns {Object|Promise<Object>} Result with success status
    */
-  function startInstance(instanceId, projectDir, channel) {
+  function startInstance(instanceId, projectDir, channel, options = {}) {
     if (instances.has(instanceId)) {
       return { success: false, error: `Instance "${instanceId}" already running` };
     }
 
     const sessionId = randomUUID();
+    const { persistent = false, image, branch = 'main' } = options;
 
-    instances.set(instanceId, {
+    const instance = {
       sessionId,
       channel,
       projectDir,
       messageCount: 0,
       startedAt: new Date(),
-      currentJob: null
-    });
+      currentJob: null,
+      persistent,
+      spriteId: null,
+      image,
+      branch
+    };
+
+    instances.set(instanceId, instance);
+
+    // For persistent mode, spawn the Sprite immediately
+    if (persistent) {
+      return spawnPersistentSprite(instanceId, instance);
+    }
 
     return { success: true, sessionId };
+  }
+
+  /**
+   * Spawn a persistent Sprite for an instance
+   * @param {string} instanceId - Instance ID
+   * @param {Object} instance - Instance data
+   * @returns {Promise<Object>} Result with success status
+   */
+  async function spawnPersistentSprite(instanceId, instance) {
+    try {
+      const spriteInfo = await orchestrator.spawnPersistent({
+        repo: instance.projectDir,
+        branch: instance.branch,
+        image: instance.image
+      });
+
+      instance.spriteId = spriteInfo.id;
+
+      return {
+        success: true,
+        sessionId: instance.sessionId,
+        spriteId: spriteInfo.id,
+        persistent: true
+      };
+    } catch (error) {
+      instances.delete(instanceId);
+      return {
+        success: false,
+        error: `Failed to spawn persistent Sprite: ${error.message}`
+      };
+    }
   }
 
   /**
@@ -71,10 +118,17 @@ function createInstanceManager(options = {}) {
       return { success: false, error: `Instance "${instanceId}" not found` };
     }
 
-    // Stop any running sprite for this instance
-    if (instance.currentJob && instance.currentJob.spriteId) {
+    // Stop the persistent Sprite if one exists
+    if (instance.spriteId) {
+      orchestrator.stopSprite(instance.spriteId).catch(err => {
+        console.error(`[Sprite] Error stopping persistent sprite for ${instanceId}:`, err);
+      });
+    }
+
+    // Stop any running job's sprite
+    if (instance.currentJob && instance.currentJob.spriteId && instance.currentJob.spriteId !== instance.spriteId) {
       orchestrator.stopSprite(instance.currentJob.spriteId).catch(err => {
-        console.error(`[Sprite] Error stopping sprite for ${instanceId}:`, err);
+        console.error(`[Sprite] Error stopping job sprite for ${instanceId}:`, err);
       });
     }
 
@@ -164,6 +218,94 @@ function createInstanceManager(options = {}) {
 
     // Build the agent command based on type
     const agentCommand = buildAgentCommand(message, instance.sessionId, agentType);
+
+    // For persistent sessions, use the existing Sprite
+    if (instance.persistent && instance.spriteId) {
+      return sendToPersistentSprite(instance, agentCommand, onMessage);
+    }
+
+    // For one-shot mode, spawn a new Sprite for each message
+    return sendToNewSprite(instance, message, agentCommand, options);
+  }
+
+  /**
+   * Send a command to a persistent Sprite
+   * @param {Object} instance - Instance data
+   * @param {string} command - Agent command to run
+   * @param {Function} onMessage - Message callback
+   * @returns {Promise<Object>} Result
+   */
+  async function sendToPersistentSprite(instance, command, onMessage) {
+    const job = new Job({
+      repo: instance.projectDir,
+      branch: instance.branch,
+      command,
+      slackChannel: instance.channel,
+      projectDir: instance.projectDir,
+      image: instance.image
+    });
+
+    jobs.set(job.jobId, job);
+    instance.currentJob = job;
+    job.start(instance.spriteId);
+
+    try {
+      if (onMessage) {
+        onMessage(`📤 Sending to Sprite ${instance.spriteId.substring(0, 8)}...`).catch(() => {});
+      }
+
+      // Use streamCommand for persistent Sprites
+      const result = await orchestrator.streamCommand(
+        instance.spriteId,
+        command,
+        (output) => {
+          job.addLog(output);
+          if (onMessage) {
+            onMessage(output).catch(err => {
+              console.error('[Sprite] Error in onMessage callback:', err);
+            });
+          }
+        }
+      );
+
+      if (result.success) {
+        job.complete(result.exitCode);
+      } else {
+        job.fail('Command failed', result.exitCode);
+      }
+
+      instance.currentJob = null;
+
+      return {
+        success: result.success,
+        responses: job.logs.map(l => l.message),
+        jobId: job.jobId,
+        exitCode: result.exitCode,
+        streamed: true,
+        persistent: true
+      };
+    } catch (error) {
+      job.fail(error.message);
+      instance.currentJob = null;
+
+      return {
+        success: false,
+        error: error.message,
+        jobId: job.jobId
+      };
+    }
+  }
+
+  /**
+   * Send a message by spawning a new Sprite (one-shot mode)
+   * @param {Object} instance - Instance data
+   * @param {string} message - Original user message
+   * @param {string} agentCommand - Built agent command
+   * @param {Object} options - Options including onMessage, repo, branch, image
+   * @returns {Promise<Object>} Result
+   */
+  async function sendToNewSprite(instance, message, agentCommand, options) {
+    const { onMessage, repo, branch = 'main', image } = options;
 
     // Create a job for this message
     const job = new Job({
