@@ -332,8 +332,30 @@ app.command('/od-send', async ({ command, ack, respond }) => {
   }
 });
 
+// Health check server for Fly.io
+const http = require('http');
+const PORT = process.env.PORT || 3978;
+
+const healthServer = http.createServer((req, res) => {
+  if (req.method === 'GET' && req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status: 'healthy',
+      backend: 'claude',
+      instances: instances.size,
+      uptime: process.uptime()
+    }));
+  } else {
+    res.writeHead(404);
+    res.end();
+  }
+});
+
 // Start the app
 (async () => {
+  healthServer.listen(PORT, () => {
+    console.log(`Health server listening on port ${PORT}`);
+  });
   await app.start();
   console.log('Claude Dispatch is running');
   console.log('Waiting for Slack commands...');
