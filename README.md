@@ -546,7 +546,7 @@ The AI responds in the same channel.
 
 ### Sprite Architecture (Cloud Mode)
 
-For scalable, isolated execution, Open Dispatch supports **Sprites** — ephemeral Fly Machines that run agents in clean environments. Output streams back via HTTP webhooks over Fly.io's private network (6PN).
+For scalable, isolated execution, Open Dispatch supports **Sprites** — ephemeral Fly Machines that run agents in clean environments. Open Dispatch acts as a **relay**: it routes messages between chat and agents, but does not store files, build images, or run agents itself. Output streams back via HTTP webhooks over Fly.io's private network (6PN).
 
 ```
 Fly.io Private Network (6PN / WireGuard mesh)
@@ -824,8 +824,13 @@ open-dispatch/
 │   ├── output-relay.js         # Buffered stdout → webhook relay
 │   └── Dockerfile              # Sidecar image for COPY --from=
 ├── tests/
+│   ├── chat-provider.test.js   # Provider architecture tests
+│   ├── job.test.js             # Job tracking tests
 │   ├── opencode-core.test.js   # Core logic tests
-│   └── chat-provider.test.js   # Provider architecture tests
+│   ├── sprite-core.test.js     # Sprite core tests
+│   ├── sprite-integration.test.js # Sprite integration tests
+│   ├── sprite-slow.test.js     # Sprite slow/E2E tests
+│   └── webhook-server.test.js  # Webhook server tests
 ├── teams-manifest/             # Teams app manifest
 ├── .env.example               # Config template
 ├── OPENCODE_SETUP.md          # OpenCode guide
@@ -843,7 +848,7 @@ open-dispatch/
 npm test
 ```
 
-63 tests covering:
+156+ tests covering:
 - Instance lifecycle
 - Output parsing (JSON, ndjson, plaintext)
 - Message chunking
