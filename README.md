@@ -4,7 +4,7 @@
 
 ### Control AI Coding Assistants from Anywhere
 
-**Slack** · **Microsoft Teams** · **Discord** · **75+ AI Providers** · **Works from Your Phone**
+**Slack** · **Microsoft Teams** · **Discord** · **75+ AI Providers** · **Fly.io Sprites** · **Works from Your Phone**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Node.js 18+](https://img.shields.io/badge/Node.js-18+-brightgreen.svg)](https://nodejs.org)
@@ -12,9 +12,9 @@
 
 ---
 
-*Start a coding session on your desktop. Guide it from your phone.*
+*Run agents locally or spin up isolated cloud VMs on [Fly.io](https://fly.io). Control everything from chat.*
 
-[Quick Start](#-quick-start) · [Deployment Modes](#-deployment-modes) · [Features](#-features) · [Setup](#-setup-choose-your-path) · [Commands](#-commands) · [Architecture](#-architecture)
+[Quick Start](#-quick-start) · [Deployment Modes](#-deployment-modes) · [Sprites](#sprite-architecture-cloud-mode) · [Features](#-features) · [Setup](#-setup-choose-your-path) · [Commands](#-commands) · [Architecture](#-architecture)
 
 </div>
 
