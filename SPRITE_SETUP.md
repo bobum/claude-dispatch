@@ -249,6 +249,37 @@ The sidecar image contains two scripts:
 
 **`:latest` auto-updates:** The sidecar is published to GHCR. When you `COPY --from=ghcr.io/bobum/open-dispatch/sidecar:latest` in your Dockerfile, each `docker build` pulls the latest version (unless cached). To pin a specific version, use the SHA tag instead of `:latest`.
 
+## Choosing an Agent CLI
+
+Your Sprite image needs an AI agent CLI installed. Open-Dispatch supports two:
+
+| | OpenCode | Claude Code CLI |
+|---|---|---|
+| **Providers** | 75+ (Anthropic, OpenAI, Google, Copilot, Ollama, etc.) | Anthropic only |
+| **Auth** | API keys or OAuth (e.g., GitHub Copilot subscription) | `ANTHROPIC_API_KEY` |
+| **Install** | `npm install -g opencode-ai` | `npm install -g @anthropic-ai/claude-code` |
+| **Best for** | Flexibility, using existing Copilot/OpenAI subscriptions | Simplicity, Anthropic-only workflows |
+
+**Use OpenCode** if you want provider flexibility — especially if you have a GitHub Copilot subscription (see [Using GitHub Copilot in Sprites](#using-github-copilot-in-sprites)). **Use Claude Code CLI** if you only need Anthropic models and want the simplest setup.
+
+You can install both in the same image and switch via `SPRITE_AGENT_TYPE` (`opencode` or `claude`).
+
+## Sprite Lifecycle
+
+Sprites are ephemeral — they spin up, do their work, and shut down. Here's when they terminate:
+
+**One-shot jobs** (`/od-run`):
+1. Agent command finishes → sidecar POSTs final status → Fly Machine **auto-destroys** (`auto_destroy: true`)
+2. If the agent hangs → OD's **stale job reaper** (runs every 60s) marks jobs as timed out after **10 minutes** of inactivity and destroys the Machine
+3. If OD's timeout fires first → the job Promise resolves with a timeout error and OD destroys the Machine
+
+**Persistent sessions** (`/od-start --persistent`):
+- Machine stays alive between messages (`auto_destroy: false`, `restart: always`)
+- Manually stopped with `/od-stop`
+- OD calls the Machines API to stop/destroy on command
+
+**Cost implications**: One-shot Sprites only bill for active compute time. Once the Machine auto-destroys, billing stops. Persistent sessions bill until you stop them.
+
 ## Custom Agent Images
 
 ### Claude Code Agent
