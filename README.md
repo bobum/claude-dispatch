@@ -47,6 +47,7 @@ KEY COMMANDS:
 - npm run start:teams:opencode   → Teams + OpenCode (local)
 - npm run start:discord          → Discord + Claude Code (local)
 - npm run start:discord:opencode → Discord + OpenCode (local)
+- npm run start:sprite           → Any provider + Sprite cloud VMs (set CHAT_PROVIDER)
 
 SLASH COMMANDS (in chat):
 LOCAL MODE:
@@ -66,7 +67,7 @@ TROUBLESHOOTING:
 - No response → Bot not invited to channel, or /od-start not run
 - "Instance not found" → Bot restarted, run /od-start again
 - Discord slash commands not showing → Wait up to 1 hour for global commands
-- "No API token" for Sprites → Set SPRITE_API_TOKEN (Fly.io token)
+- "No API token" for Sprites → Set FLY_API_TOKEN (Fly.io token)
 - Sprite spawn failed → Check image exists, Fly.io token valid
 
 SUCCESS CRITERIA:
@@ -567,8 +568,14 @@ open-dispatch/
 │   ├── claude-core.js          # Claude CLI integration
 │   ├── opencode-core.js        # OpenCode CLI integration
 │   ├── sprite-core.js          # Sprite (ephemeral VM) integration
-│   ├── sprite-orchestrator.js  # Sprite API orchestration
+│   ├── sprite-orchestrator.js  # Fly Machines API orchestration
+│   ├── sprite-bot.js           # Provider-agnostic Sprite entry point
+│   ├── webhook-server.js       # Receives output from Sprites via webhooks
 │   └── job.js                  # Job tracking for Sprite executions
+├── sidecar/
+│   ├── sprite-reporter.sh      # Sprite entry point (clone, run, report)
+│   ├── output-relay.js         # Buffered stdout → webhook relay
+│   └── Dockerfile              # Sidecar image for COPY --from=
 ├── tests/
 │   ├── opencode-core.test.js   # Core logic tests
 │   └── chat-provider.test.js   # Provider architecture tests

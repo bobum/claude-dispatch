@@ -1,12 +1,15 @@
 /**
  * Sprite Core Module
  *
- * Contains the core logic for running AI agents in Sprites (ephemeral micro-VMs).
- * Follows the same interface as claude-core.js and opencode-core.js for
- * compatibility with the bot-engine.
+ * Core logic for running AI agents in Sprites (ephemeral Fly Machines).
+ * Follows the same interface as claude-core.js and opencode-core.js
+ * for compatibility with the bot-engine.
  *
- * Instead of spawning local processes, this module spawns Sprites via the
- * SpriteOrchestrator and streams results back.
+ * One-shot jobs: Sprite boots, runs agent, POSTs output back via webhooks,
+ * and auto-destroys. The sendToInstance Promise resolves when the
+ * /webhooks/status webhook fires.
+ *
+ * Persistent sessions: Sprite stays alive, commands sent via exec API.
  */
 
 const { randomUUID } = require('crypto');
@@ -14,14 +17,14 @@ const { Job, JobStatus } = require('./job');
 const { SpriteOrchestrator } = require('./sprite-orchestrator');
 
 /**
- * Create an instance manager for Sprite-based agents
- * @param {Object} options - Configuration options
- * @param {string} [options.apiToken] - Sprite API token
- * @param {string} [options.baseUrl] - Sprite API base URL
- * @param {string} [options.baseImage] - Base Docker image for Sprites
- * @param {string} [options.agentType] - Agent to run: 'claude' or 'opencode'
- * @param {SpriteOrchestrator} [options.orchestrator] - Optional orchestrator instance for testing
- * @returns {Object} Instance manager with methods
+ * Create an instance manager for Sprite-based agents.
+ * @param {Object} options
+ * @param {string} [options.apiToken] - Fly API token
+ * @param {string} [options.appName] - Fly app name for Sprites
+ * @param {string} [options.baseImage] - Default Docker image
+ * @param {string} [options.agentType] - 'claude' or 'opencode'
+ * @param {SpriteOrchestrator} [options.orchestrator] - For testing
+ * @returns {Object} Instance manager
  */
 function createInstanceManager(options = {}) {
   const instances = new Map();
@@ -30,32 +33,31 @@ function createInstanceManager(options = {}) {
 
   const orchestrator = options.orchestrator || new SpriteOrchestrator({
     apiToken: options.apiToken,
-    baseUrl: options.baseUrl,
+    appName: options.appName,
     baseImage: options.baseImage
   });
 
+  let staleReaperInterval = null;
+
   /**
-   * Start a new Sprite-based agent instance
-   * @param {string} instanceId - Instance identifier
-   * @param {string} projectDir - Project directory (used as repo for Sprites)
-   * @param {string} channel - Chat channel ID
-   * @param {Object} [options] - Additional options
-   * @param {boolean} [options.persistent] - If true, spawn a long-running Sprite
-   * @param {string} [options.image] - Docker image to use
-   * @param {string} [options.branch] - Branch to checkout
-   * @returns {Object|Promise<Object>} Result with success status
+   * Start a new Sprite-based agent instance.
+   * @param {string} instanceId
+   * @param {string} projectDir - Used as repo for Sprites
+   * @param {string} channelId - Chat channel ID (provider-agnostic)
+   * @param {Object} [opts]
+   * @returns {Promise<Object>} Result with success status
    */
-  function startInstance(instanceId, projectDir, channel, options = {}) {
+  async function startInstance(instanceId, projectDir, channelId, opts = {}) {
     if (instances.has(instanceId)) {
       return { success: false, error: `Instance "${instanceId}" already running` };
     }
 
     const sessionId = randomUUID();
-    const { persistent = false, image, branch = 'main' } = options;
+    const { persistent = false, image, branch = 'main' } = opts;
 
     const instance = {
       sessionId,
-      channel,
+      channelId,
       projectDir,
       messageCount: 0,
       startedAt: new Date(),
@@ -68,67 +70,39 @@ function createInstanceManager(options = {}) {
 
     instances.set(instanceId, instance);
 
-    // For persistent mode, spawn the Sprite immediately
     if (persistent) {
-      return spawnPersistentSprite(instanceId, instance);
+      try {
+        const machineInfo = await orchestrator.spawnPersistent({
+          repo: projectDir,
+          branch,
+          image
+        });
+        instance.spriteId = machineInfo.id;
+        return { success: true, sessionId, spriteId: machineInfo.id, persistent: true };
+      } catch (error) {
+        instances.delete(instanceId);
+        return { success: false, error: `Failed to spawn persistent Sprite: ${error.message}` };
+      }
     }
 
     return { success: true, sessionId };
   }
 
-  /**
-   * Spawn a persistent Sprite for an instance
-   * @param {string} instanceId - Instance ID
-   * @param {Object} instance - Instance data
-   * @returns {Promise<Object>} Result with success status
-   */
-  async function spawnPersistentSprite(instanceId, instance) {
-    try {
-      const spriteInfo = await orchestrator.spawnPersistent({
-        repo: instance.projectDir,
-        branch: instance.branch,
-        image: instance.image
-      });
-
-      instance.spriteId = spriteInfo.id;
-
-      return {
-        success: true,
-        sessionId: instance.sessionId,
-        spriteId: spriteInfo.id,
-        persistent: true
-      };
-    } catch (error) {
-      instances.delete(instanceId);
-      return {
-        success: false,
-        error: `Failed to spawn persistent Sprite: ${error.message}`
-      };
-    }
-  }
-
-  /**
-   * Stop a Sprite-based agent instance
-   * @param {string} instanceId - Instance identifier
-   * @returns {Object} Result with success status
-   */
   function stopInstance(instanceId) {
     const instance = instances.get(instanceId);
     if (!instance) {
       return { success: false, error: `Instance "${instanceId}" not found` };
     }
 
-    // Stop the persistent Sprite if one exists
     if (instance.spriteId) {
       orchestrator.stopSprite(instance.spriteId).catch(err => {
-        console.error(`[Sprite] Error stopping persistent sprite for ${instanceId}:`, err);
+        console.error(`[Sprite] Error stopping sprite for ${instanceId}:`, err.message);
       });
     }
 
-    // Stop any running job's sprite
-    if (instance.currentJob && instance.currentJob.spriteId && instance.currentJob.spriteId !== instance.spriteId) {
-      orchestrator.stopSprite(instance.currentJob.spriteId).catch(err => {
-        console.error(`[Sprite] Error stopping job sprite for ${instanceId}:`, err);
+    if (instance.currentJob && instance.currentJob.machineId && instance.currentJob.machineId !== instance.spriteId) {
+      orchestrator.stopSprite(instance.currentJob.machineId).catch(err => {
+        console.error(`[Sprite] Error stopping job machine for ${instanceId}:`, err.message);
       });
     }
 
@@ -136,33 +110,19 @@ function createInstanceManager(options = {}) {
     return { success: true };
   }
 
-  /**
-   * Get an instance by ID
-   * @param {string} instanceId - Instance identifier
-   * @returns {Object|null} Instance or null
-   */
   function getInstance(instanceId) {
     return instances.get(instanceId) || null;
   }
 
-  /**
-   * Find instance by channel
-   * @param {string} channelId - Channel identifier
-   * @returns {Object|null} Instance info or null
-   */
   function getInstanceByChannel(channelId) {
     for (const [instanceId, instance] of instances) {
-      if (instance.channel === channelId) {
+      if (instance.channelId === channelId) {
         return { instanceId, instance };
       }
     }
     return null;
   }
 
-  /**
-   * List all instances
-   * @returns {Array} Array of instance info
-   */
   function listInstances() {
     return Array.from(instances.entries()).map(([instanceId, instance]) => ({
       instanceId,
@@ -171,41 +131,26 @@ function createInstanceManager(options = {}) {
     }));
   }
 
-  /**
-   * Clear all instances (useful for testing)
-   */
   function clearInstances() {
     instances.clear();
     jobs.clear();
   }
 
-  /**
-   * Get a job by ID
-   * @param {string} jobId - Job identifier
-   * @returns {Job|null} Job or null
-   */
   function getJob(jobId) {
     return jobs.get(jobId) || null;
   }
 
-  /**
-   * List all jobs
-   * @returns {Array} Array of job summaries
-   */
   function listJobs() {
     return Array.from(jobs.values()).map(job => job.toSummary());
   }
 
   /**
-   * Send a message to a Sprite-based agent instance
-   * @param {string} instanceId - Instance ID
-   * @param {string} message - Message/command to send
-   * @param {Object} options - Optional settings
-   * @param {Function} [options.onMessage] - Callback for streaming messages
-   * @param {string} [options.repo] - Repository URL (overrides projectDir)
-   * @param {string} [options.branch] - Branch name
-   * @param {string} [options.image] - Docker image to use for this job
-   * @returns {Promise<Object>} Result with success, responses, jobId
+   * Send a message to a Sprite-based agent instance.
+   *
+   * For one-shot mode: spawns a Machine, returns a Promise that resolves
+   * when the /webhooks/status webhook fires (not via polling).
+   *
+   * For persistent mode: sends command via exec API.
    */
   async function sendToInstance(instanceId, message, options = {}) {
     const instance = instances.get(instanceId);
@@ -216,31 +161,23 @@ function createInstanceManager(options = {}) {
     const { onMessage, repo, branch = 'main', image } = options;
     instance.messageCount++;
 
-    // Build the agent command based on type
     const agentCommand = buildAgentCommand(message, instance.sessionId, agentType);
 
-    // For persistent sessions, use the existing Sprite
+    // Persistent: exec on existing Machine
     if (instance.persistent && instance.spriteId) {
       return sendToPersistentSprite(instance, agentCommand, onMessage);
     }
 
-    // For one-shot mode, spawn a new Sprite for each message
-    return sendToNewSprite(instance, message, agentCommand, options);
+    // One-shot: spawn Machine, wait for webhook callback
+    return sendToNewSprite(instance, agentCommand, { onMessage, repo, branch, image });
   }
 
-  /**
-   * Send a command to a persistent Sprite
-   * @param {Object} instance - Instance data
-   * @param {string} command - Agent command to run
-   * @param {Function} onMessage - Message callback
-   * @returns {Promise<Object>} Result
-   */
   async function sendToPersistentSprite(instance, command, onMessage) {
     const job = new Job({
       repo: instance.projectDir,
       branch: instance.branch,
       command,
-      slackChannel: instance.channel,
+      channelId: instance.channelId,
       projectDir: instance.projectDir,
       image: instance.image
     });
@@ -251,10 +188,9 @@ function createInstanceManager(options = {}) {
 
     try {
       if (onMessage) {
-        onMessage(`📤 Sending to Sprite ${instance.spriteId.substring(0, 8)}...`).catch(() => {});
+        await onMessage(`Sending to Sprite ${instance.spriteId.substring(0, 8)}...`).catch(() => {});
       }
 
-      // Use streamCommand for persistent Sprites
       const result = await orchestrator.streamCommand(
         instance.spriteId,
         command,
@@ -262,7 +198,7 @@ function createInstanceManager(options = {}) {
           job.addLog(output);
           if (onMessage) {
             onMessage(output).catch(err => {
-              console.error('[Sprite] Error in onMessage callback:', err);
+              console.error('[Sprite] onMessage error:', err.message);
             });
           }
         }
@@ -287,128 +223,79 @@ function createInstanceManager(options = {}) {
     } catch (error) {
       job.fail(error.message);
       instance.currentJob = null;
-
-      return {
-        success: false,
-        error: error.message,
-        jobId: job.jobId
-      };
+      return { success: false, error: error.message, jobId: job.jobId };
     }
   }
 
   /**
-   * Send a message by spawning a new Sprite (one-shot mode)
-   * @param {Object} instance - Instance data
-   * @param {string} message - Original user message
-   * @param {string} agentCommand - Built agent command
-   * @param {Object} options - Options including onMessage, repo, branch, image
-   * @returns {Promise<Object>} Result
+   * One-shot mode: spawn a Machine and wait for webhook completion.
+   * The Promise resolves when /webhooks/status fires with completed/failed.
    */
-  async function sendToNewSprite(instance, message, agentCommand, options) {
+  async function sendToNewSprite(instance, agentCommand, options) {
     const { onMessage, repo, branch = 'main', image } = options;
 
-    // Create a job for this message
+    const jobToken = orchestrator.generateJobToken(randomUUID());
+
     const job = new Job({
       repo: repo || instance.projectDir,
       branch,
       command: agentCommand,
-      slackChannel: instance.channel,
+      channelId: instance.channelId,
       projectDir: instance.projectDir,
-      image
+      image,
+      jobToken,
+      onMessage,
+      timeoutMs: 600000
+    });
+
+    // Create a Promise that resolves when the webhook status fires
+    const completionPromise = new Promise((resolve) => {
+      job.onComplete = (completedJob) => {
+        instance.currentJob = null;
+        resolve({
+          success: completedJob.status === JobStatus.COMPLETED,
+          responses: completedJob.logs.map(l => l.message),
+          jobId: completedJob.jobId,
+          artifacts: completedJob.artifacts,
+          exitCode: completedJob.exitCode,
+          streamed: true
+        });
+      };
     });
 
     jobs.set(job.jobId, job);
     instance.currentJob = job;
 
     try {
-      // Spawn the sprite
-      const spriteInfo = await orchestrator.spawnJob(job);
+      const machineInfo = await orchestrator.spawnJob(job);
 
       if (onMessage) {
-        onMessage(`🚀 Job ${job.jobId} started in Sprite ${spriteInfo.id}`).catch(err => {
-          console.error('[Sprite] Error in onMessage callback:', err);
-        });
+        await onMessage(`Job ${job.jobId.substring(0, 8)} started (Machine ${machineInfo.id.substring(0, 8)})`).catch(() => {});
       }
 
-      // Stream logs back to the caller
-      const logPromise = streamJobLogs(job, spriteInfo.id, onMessage);
-
-      // Wait for completion
-      const finalStatus = await orchestrator.waitForCompletion(spriteInfo.id);
-
-      // Wait for log streaming to finish
-      await logPromise.catch(err => {
-        console.error('[Sprite] Error streaming logs:', err);
+      // Wait for webhook to fire (or timeout)
+      const timeoutPromise = new Promise((resolve) => {
+        setTimeout(() => {
+          if (job.status === JobStatus.RUNNING) {
+            job.fail('Job timed out');
+            instance.currentJob = null;
+            resolve({
+              success: false,
+              error: 'Job timed out',
+              jobId: job.jobId
+            });
+          }
+        }, job.timeoutMs);
       });
 
-      // Collect artifacts
-      try {
-        const artifacts = await orchestrator.getArtifacts(spriteInfo.id);
-        for (const artifact of artifacts) {
-          job.addArtifact(artifact);
-        }
-      } catch (err) {
-        console.error('[Sprite] Error collecting artifacts:', err);
-      }
-
-      // Update job status
-      if (finalStatus.state === 'completed' && finalStatus.exit_code === 0) {
-        job.complete(finalStatus.exit_code);
-      } else {
-        job.fail(finalStatus.error || 'Sprite execution failed', finalStatus.exit_code);
-      }
-
-      instance.currentJob = null;
-
-      return {
-        success: job.status === JobStatus.COMPLETED,
-        responses: job.logs.map(l => l.message),
-        jobId: job.jobId,
-        artifacts: job.artifacts,
-        exitCode: job.exitCode,
-        streamed: true
-      };
+      return await Promise.race([completionPromise, timeoutPromise]);
     } catch (error) {
       job.fail(error.message);
       instance.currentJob = null;
-
-      return {
-        success: false,
-        error: error.message,
-        jobId: job.jobId
-      };
+      return { success: false, error: error.message, jobId: job.jobId };
     }
   }
 
-  /**
-   * Stream logs from a job's sprite
-   * @param {Job} job - The job
-   * @param {string} spriteId - Sprite ID
-   * @param {Function} onMessage - Message callback
-   */
-  async function streamJobLogs(job, spriteId, onMessage) {
-    if (!onMessage) return;
-
-    try {
-      await orchestrator.streamLogs(spriteId, (log) => {
-        job.addLog(log);
-        onMessage(log).catch(err => {
-          console.error('[Sprite] Error in onMessage callback:', err);
-        });
-      });
-    } catch (err) {
-      // Log streaming may fail if sprite completes before we start streaming
-      console.warn('[Sprite] Log streaming ended:', err.message);
-    }
-  }
-
-  /**
-   * Build the agent command to run inside the Sprite
-   * @param {string} message - User message
-   * @param {string} sessionId - Session ID for continuity
-   * @param {string} type - Agent type ('claude' or 'opencode')
-   * @returns {string} Shell command
-   */
   function buildAgentCommand(message, sessionId, type) {
     const escapedMessage = message.replace(/'/g, "'\\''");
 
@@ -416,16 +303,43 @@ function createInstanceManager(options = {}) {
       return `opencode run --format json --session '${sessionId}' -- '${escapedMessage}'`;
     }
 
-    // Default to Claude
     return `claude --dangerously-skip-permissions --output-format stream-json --session-id '${sessionId}' -p '${escapedMessage}'`;
   }
 
-  /**
-   * Build CLI arguments (for interface compatibility)
-   */
-  function buildArgs(message, projectDir, sessionId, isFirstMessage) {
-    // For Sprites, we don't use local CLI args, but return the remote command
+  function buildArgs(message, projectDir, sessionId) {
     return buildAgentCommand(message, sessionId, agentType).split(' ');
+  }
+
+  /**
+   * Start the stale job reaper.
+   * Runs every 60s, marks timed-out running jobs as failed.
+   */
+  function startStaleReaper() {
+    if (staleReaperInterval) return;
+    staleReaperInterval = setInterval(() => {
+      for (const [jobId, job] of jobs) {
+        if (job.isTimedOut()) {
+          console.warn(`[Sprite] Job ${jobId} timed out, marking failed`);
+          job.fail('Job timed out (stale reaper)');
+          if (job.onComplete) {
+            job.onComplete(job).catch(e => {
+              console.error(`[Sprite] onComplete error during reap:`, e.message);
+            });
+          }
+          // Clean up the Machine
+          if (job.machineId) {
+            orchestrator.destroyMachine(job.machineId).catch(() => {});
+          }
+        }
+      }
+    }, 60000);
+  }
+
+  function stopStaleReaper() {
+    if (staleReaperInterval) {
+      clearInterval(staleReaperInterval);
+      staleReaperInterval = null;
+    }
   }
 
   return {
@@ -439,44 +353,12 @@ function createInstanceManager(options = {}) {
     buildArgs,
     getJob,
     listJobs,
+    startStaleReaper,
+    stopStaleReaper,
     get instances() { return instances; },
     get jobs() { return jobs; },
     get orchestrator() { return orchestrator; }
   };
 }
 
-/**
- * Chunk text for message limits
- * @param {string} text - Text to chunk
- * @param {number} maxLength - Maximum chunk length
- * @returns {string[]} Array of chunks
- */
-function chunkText(text, maxLength = 3900) {
-  const chunks = [];
-  let remaining = text;
-
-  while (remaining.length > 0) {
-    if (remaining.length <= maxLength) {
-      chunks.push(remaining);
-      break;
-    }
-
-    let breakPoint = remaining.lastIndexOf('\n', maxLength);
-    if (breakPoint === -1 || breakPoint < maxLength / 2) {
-      breakPoint = remaining.lastIndexOf(' ', maxLength);
-    }
-    if (breakPoint === -1 || breakPoint < maxLength / 2) {
-      breakPoint = maxLength;
-    }
-
-    chunks.push(remaining.slice(0, breakPoint));
-    remaining = remaining.slice(breakPoint).trim();
-  }
-
-  return chunks;
-}
-
-module.exports = {
-  createInstanceManager,
-  chunkText
-};
+module.exports = { createInstanceManager };

@@ -1,92 +1,123 @@
 /**
  * Sprite Orchestrator Module
  *
- * Handles spawning and managing ephemeral micro-VMs (Sprites) for running
- * AI coding agents in isolated environments.
+ * Manages ephemeral Fly Machines (Sprites) for running AI coding agents.
+ * Uses the Fly Machines API (api.machines.dev) — not the fictional sprites.dev.
  *
- * Sprites are event-driven, usage-billed VMs that auto-sleep when idle.
- * They provide clean, isolated environments per job.
+ * Communication pattern: Sprites POST output back to Open-Dispatch via
+ * HTTP webhooks over Fly.io private networking. No polling for logs/status.
  */
 
+const { randomUUID, createHmac } = require('crypto');
 const EventEmitter = require('events');
 
-/**
- * SpriteOrchestrator manages the lifecycle of Sprite VMs
- */
 class SpriteOrchestrator extends EventEmitter {
   /**
-   * Create a SpriteOrchestrator
-   * @param {Object} options - Configuration options
-   * @param {string} options.apiToken - Sprite API token (SPRITE_API_TOKEN)
-   * @param {string} [options.baseUrl] - Sprite API base URL
-   * @param {string} [options.baseImage] - Base Docker image for Sprites
-   * @param {string} [options.region] - Preferred region for Sprites
-   * @param {Function} [options.fetchFn] - Optional fetch function for testing
+   * @param {Object} options
+   * @param {string} options.apiToken - Fly.io API token (FLY_API_TOKEN)
+   * @param {string} options.appName - Fly app name for Sprites (FLY_SPRITE_APP)
+   * @param {string} [options.baseUrl] - Machines API base URL
+   * @param {string} [options.baseImage] - Default Docker image for Sprites (SPRITE_IMAGE)
+   * @param {string} [options.openDispatchUrl] - Webhook callback URL
+   * @param {string} [options.region] - Preferred Fly region
+   * @param {Function} [options.fetchFn] - Fetch implementation (for testing)
    */
   constructor(options = {}) {
     super();
-    this.apiToken = options.apiToken || process.env.SPRITE_API_TOKEN;
-    this.baseUrl = options.baseUrl || process.env.SPRITE_API_URL || 'https://api.sprites.dev/v1';
-    this.baseImage = options.baseImage || process.env.SPRITE_BASE_IMAGE || 'open-dispatch/agent:latest';
-    this.region = options.region || process.env.SPRITE_REGION || 'iad';
+    this.apiToken = options.apiToken || process.env.FLY_API_TOKEN;
+    this.appName = options.appName || process.env.FLY_SPRITE_APP;
+    this.baseUrl = options.baseUrl || 'https://api.machines.dev/v1';
+    this.baseImage = options.baseImage || process.env.SPRITE_IMAGE || 'open-dispatch/agent:latest';
+    this.openDispatchUrl = options.openDispatchUrl || process.env.OPEN_DISPATCH_URL || 'http://open-dispatch.internal:8080';
+    this.region = options.region || process.env.FLY_REGION || 'iad';
     this.fetchFn = options.fetchFn || fetch;
+    this.tokenSecret = options.tokenSecret || process.env.JOB_TOKEN_SECRET || randomUUID();
 
     if (!this.apiToken) {
-      console.warn('[SpriteOrchestrator] No API token provided. Set SPRITE_API_TOKEN environment variable.');
+      console.warn('[SpriteOrchestrator] No API token. Set FLY_API_TOKEN.');
+    }
+    if (!this.appName) {
+      console.warn('[SpriteOrchestrator] No app name. Set FLY_SPRITE_APP.');
     }
   }
 
+  _machinesUrl(path = '') {
+    return `${this.baseUrl}/apps/${this.appName}/machines${path}`;
+  }
+
+  _headers(contentType = true) {
+    const h = { 'Authorization': `Bearer ${this.apiToken}` };
+    if (contentType) h['Content-Type'] = 'application/json';
+    return h;
+  }
+
   /**
-   * Spawn a new Sprite for a job
-   * @param {Job} job - The job to run
-   * @param {Object} [options] - Spawn options
-   * @param {number} [options.timeoutMs] - Max runtime in milliseconds
-   * @param {Object} [options.env] - Additional environment variables
-   * @returns {Promise<Object>} Sprite info with id, status
+   * Generate a job-scoped auth token for webhook validation.
+   * @param {string} jobId
+   * @returns {string}
+   */
+  generateJobToken(jobId) {
+    return createHmac('sha256', this.tokenSecret).update(jobId).digest('hex');
+  }
+
+  /**
+   * Spawn a new Fly Machine for a one-shot job.
+   * The Machine runs sprite-reporter which POSTs output back via webhooks.
+   *
+   * @param {import('./job').Job} job
+   * @param {Object} [options]
+   * @param {Object} [options.env] - Additional env vars
+   * @returns {Promise<Object>} Machine info { id, state, ... }
    */
   async spawnJob(job, options = {}) {
-    const { timeoutMs = 600000, env = {} } = options;
-
-    // Use job-specific image if provided, otherwise fall back to default
+    const { env = {} } = options;
     const image = job.image || this.baseImage;
 
-    const command = this._buildCommand(job);
-    const spriteEnv = {
+    const machineEnv = {
       JOB_ID: job.jobId,
-      REPO: job.repo,
-      BRANCH: job.branch,
-      SLACK_CHANNEL: job.slackChannel,
-      COMMAND: job.command,
+      JOB_TOKEN: job.jobToken,
+      OPEN_DISPATCH_URL: this.openDispatchUrl,
+      REPO: job.repo || '',
+      BRANCH: job.branch || 'main',
+      COMMAND: job.command || '',
+      GH_TOKEN: process.env.GH_TOKEN || '',
+      ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
       ...env
     };
 
+    if (process.env.DATABASE_URL) {
+      machineEnv.DATABASE_URL = process.env.DATABASE_URL;
+    }
+
     try {
-      const response = await this.fetchFn(`${this.baseUrl}/sprites`, {
+      const response = await this.fetchFn(this._machinesUrl(), {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.apiToken}`,
-          'Content-Type': 'application/json'
-        },
+        headers: this._headers(),
         body: JSON.stringify({
-          image: image,
-          command: command,
-          env: spriteEnv,
           region: this.region,
-          timeout_ms: timeoutMs
+          config: {
+            image,
+            env: machineEnv,
+            auto_destroy: true,
+            restart: { policy: 'no' },
+            guest: {
+              cpu_kind: 'shared',
+              cpus: 2,
+              memory_mb: 2048
+            }
+          }
         })
       });
 
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`Sprite API error: ${response.status} - ${errorText}`);
+        throw new Error(`Machines API ${response.status}: ${errorText}`);
       }
 
-      const spriteInfo = await response.json();
-
-      job.start(spriteInfo.id);
-      this.emit('sprite:started', { job, spriteInfo });
-
-      return spriteInfo;
+      const machineInfo = await response.json();
+      job.start(machineInfo.id);
+      this.emit('sprite:started', { job, machineInfo });
+      return machineInfo;
     } catch (error) {
       job.fail(error.message);
       this.emit('sprite:error', { job, error });
@@ -95,295 +126,50 @@ class SpriteOrchestrator extends EventEmitter {
   }
 
   /**
-   * Build the command to run inside the Sprite
-   * @param {Job} job - The job
-   * @returns {string[]} Command array
-   */
-  _buildCommand(job) {
-    // Command is an array for exec-style spawning
-    // The entrypoint script will handle git clone, checkout, and running the agent
-    return [
-      '/bin/sh', '-c',
-      `
-        set -e
-        echo "[Sprite] Starting job ${job.jobId}"
-
-        # Clone repository
-        git clone --depth 1 --branch ${this._escapeShell(job.branch)} ${this._escapeShell(job.repo)} /workspace || {
-          git clone ${this._escapeShell(job.repo)} /workspace
-          cd /workspace
-          git checkout ${this._escapeShell(job.branch)} || git checkout -b ${this._escapeShell(job.branch)}
-        }
-
-        cd /workspace
-        echo "[Sprite] Repository cloned, running command"
-
-        # Run the agent command
-        ${job.command}
-
-        echo "[Sprite] Command completed"
-      `.trim()
-    ];
-  }
-
-  /**
-   * Escape a string for shell use
-   * @param {string} str - String to escape
-   * @returns {string} Escaped string
-   */
-  _escapeShell(str) {
-    if (!str) return '""';
-    return `'${str.replace(/'/g, "'\\''")}'`;
-  }
-
-  /**
-   * Get the status of a Sprite
-   * @param {string} spriteId - Sprite ID
-   * @returns {Promise<Object>} Sprite status
-   */
-  async getSpriteStatus(spriteId) {
-    const response = await this.fetchFn(`${this.baseUrl}/sprites/${spriteId}`, {
-      headers: {
-        'Authorization': `Bearer ${this.apiToken}`
-      }
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to get sprite status: ${response.status}`);
-    }
-
-    return response.json();
-  }
-
-  /**
-   * Stream logs from a Sprite
-   * @param {string} spriteId - Sprite ID
-   * @param {Function} onLog - Callback for each log line: (log: string) => void
-   * @returns {Promise<void>}
-   */
-  async streamLogs(spriteId, onLog) {
-    const response = await this.fetchFn(`${this.baseUrl}/sprites/${spriteId}/logs`, {
-      headers: {
-        'Authorization': `Bearer ${this.apiToken}`
-      }
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to stream logs: ${response.status}`);
-    }
-
-    // Handle streaming response
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (line.trim()) {
-            onLog(line);
-          }
-        }
-      }
-
-      // Process any remaining buffer
-      if (buffer.trim()) {
-        onLog(buffer);
-      }
-    } finally {
-      reader.releaseLock();
-    }
-  }
-
-  /**
-   * Wait for a Sprite to complete
-   * @param {string} spriteId - Sprite ID
-   * @param {Object} [options] - Options
-   * @param {number} [options.pollIntervalMs] - Poll interval in ms
-   * @param {number} [options.timeoutMs] - Max wait time in ms
-   * @returns {Promise<Object>} Final sprite status
-   */
-  async waitForCompletion(spriteId, options = {}) {
-    const { pollIntervalMs = 5000, timeoutMs = 600000 } = options;
-    const startTime = Date.now();
-
-    while (Date.now() - startTime < timeoutMs) {
-      const status = await this.getSpriteStatus(spriteId);
-
-      if (status.state === 'completed' || status.state === 'failed' || status.state === 'stopped') {
-        return status;
-      }
-
-      await this._sleep(pollIntervalMs);
-    }
-
-    throw new Error(`Sprite ${spriteId} timed out after ${timeoutMs}ms`);
-  }
-
-  /**
-   * Stop a running Sprite
-   * @param {string} spriteId - Sprite ID
-   * @returns {Promise<Object>} Stop result
-   */
-  async stopSprite(spriteId) {
-    const response = await this.fetchFn(`${this.baseUrl}/sprites/${spriteId}/stop`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${this.apiToken}`
-      }
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to stop sprite: ${response.status}`);
-    }
-
-    return response.json();
-  }
-
-  /**
-   * Get artifacts from a completed Sprite
-   * @param {string} spriteId - Sprite ID
-   * @returns {Promise<Object[]>} List of artifacts
-   */
-  async getArtifacts(spriteId) {
-    const response = await this.fetchFn(`${this.baseUrl}/sprites/${spriteId}/artifacts`, {
-      headers: {
-        'Authorization': `Bearer ${this.apiToken}`
-      }
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to get artifacts: ${response.status}`);
-    }
-
-    return response.json();
-  }
-
-  /**
-   * Upload artifacts to persistent storage
-   * @param {string} spriteId - Sprite ID
-   * @param {string} artifactPath - Path pattern for artifacts (e.g., "artifacts/*")
-   * @returns {Promise<Object[]>} Uploaded artifact URLs
-   */
-  async uploadArtifacts(spriteId, artifactPath = 'artifacts/*') {
-    const response = await this.fetchFn(`${this.baseUrl}/sprites/${spriteId}/artifacts/upload`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${this.apiToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ path: artifactPath })
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to upload artifacts: ${response.status}`);
-    }
-
-    return response.json();
-  }
-
-  /**
-   * Sleep helper
-   * @param {number} ms - Milliseconds to sleep
-   * @returns {Promise<void>}
-   */
-  _sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  // ============================================
-  // PERSISTENT SPRITE METHODS
-  // ============================================
-
-  /**
-   * Spawn a persistent Sprite that stays alive for multiple commands
-   * @param {Object} options - Spawn options
-   * @param {string} options.repo - Repository URL
-   * @param {string} [options.branch] - Branch name
-   * @param {string} [options.image] - Docker image
-   * @param {Object} [options.env] - Additional environment variables
-   * @param {number} [options.idleTimeoutMs] - Idle timeout before sleep (default: 30 minutes)
-   * @returns {Promise<Object>} Sprite info with id
+   * Spawn a persistent Machine that stays alive for multiple exec calls.
+   * @param {Object} options
+   * @returns {Promise<Object>} Machine info
    */
   async spawnPersistent(options = {}) {
-    const {
-      repo,
-      branch = 'main',
-      image,
-      env = {},
-      idleTimeoutMs = 1800000 // 30 minutes
-    } = options;
-
+    const { repo, branch = 'main', image, env = {} } = options;
     const spriteImage = image || this.baseImage;
 
-    // Persistent Sprites run a long-lived entrypoint that:
-    // 1. Clones the repo
-    // 2. Listens for commands via the Sprite exec API
-    // The command here just sets up the workspace and keeps the container alive
-    const setupCommand = [
-      '/bin/sh', '-c',
-      `
-        set -e
-        echo "[Sprite] Setting up persistent workspace"
-
-        # Clone repository
-        git clone --branch ${this._escapeShell(branch)} ${this._escapeShell(repo)} /workspace || {
-          git clone ${this._escapeShell(repo)} /workspace
-          cd /workspace
-          git checkout ${this._escapeShell(branch)} || git checkout -b ${this._escapeShell(branch)}
-        }
-
-        cd /workspace
-        echo "[Sprite] Workspace ready at /workspace"
-        echo "[Sprite] Waiting for commands..."
-
-        # Keep alive - the Sprite will auto-sleep when idle
-        # Commands are sent via the exec API
-        while true; do
-          sleep 60
-        done
-      `.trim()
-    ];
-
     try {
-      const response = await this.fetchFn(`${this.baseUrl}/sprites`, {
+      const response = await this.fetchFn(this._machinesUrl(), {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.apiToken}`,
-          'Content-Type': 'application/json'
-        },
+        headers: this._headers(),
         body: JSON.stringify({
-          image: spriteImage,
-          command: setupCommand,
-          env: {
-            REPO: repo,
-            BRANCH: branch,
-            PERSISTENT: 'true',
-            ...env
-          },
           region: this.region,
-          idle_timeout_ms: idleTimeoutMs,
-          // No hard timeout - sprite stays alive until stopped
-          timeout_ms: 0
+          config: {
+            image: spriteImage,
+            env: {
+              REPO: repo || '',
+              BRANCH: branch,
+              PERSISTENT: 'true',
+              OPEN_DISPATCH_URL: this.openDispatchUrl,
+              GH_TOKEN: process.env.GH_TOKEN || '',
+              ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
+              ...env
+            },
+            auto_destroy: false,
+            restart: { policy: 'always' },
+            guest: {
+              cpu_kind: 'shared',
+              cpus: 2,
+              memory_mb: 2048
+            }
+          }
         })
       });
 
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`Sprite API error: ${response.status} - ${errorText}`);
+        throw new Error(`Machines API ${response.status}: ${errorText}`);
       }
 
-      const spriteInfo = await response.json();
-      this.emit('sprite:persistent:started', { spriteInfo, repo, branch });
-
-      return spriteInfo;
+      const machineInfo = await response.json();
+      this.emit('sprite:persistent:started', { machineInfo, repo, branch });
+      return machineInfo;
     } catch (error) {
       this.emit('sprite:error', { error });
       throw error;
@@ -391,164 +177,125 @@ class SpriteOrchestrator extends EventEmitter {
   }
 
   /**
-   * Send a command to an existing Sprite via exec API
-   * @param {string} spriteId - Sprite ID
-   * @param {string} command - Command to execute
-   * @param {Object} [options] - Options
-   * @param {string} [options.workdir] - Working directory (default: /workspace)
-   * @param {Object} [options.env] - Additional environment variables
-   * @returns {Promise<Object>} Exec result with output
+   * Get Machine status.
+   * @param {string} machineId
+   * @returns {Promise<Object>}
    */
-  async sendCommand(spriteId, command, options = {}) {
-    const { workdir = '/workspace', env = {} } = options;
-
-    try {
-      // First, wake the sprite if it's sleeping
-      await this.wakeSprite(spriteId);
-
-      const response = await this.fetchFn(`${this.baseUrl}/sprites/${spriteId}/exec`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.apiToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          command: ['/bin/sh', '-c', `cd ${workdir} && ${command}`],
-          env
-        })
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Sprite exec error: ${response.status} - ${errorText}`);
-      }
-
-      const result = await response.json();
-      this.emit('sprite:exec:completed', { spriteId, command, result });
-
-      return result;
-    } catch (error) {
-      this.emit('sprite:exec:error', { spriteId, command, error });
-      throw error;
+  async getSpriteStatus(machineId) {
+    const response = await this.fetchFn(this._machinesUrl(`/${machineId}`), {
+      headers: this._headers(false)
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to get machine status: ${response.status}`);
     }
+    return response.json();
   }
 
   /**
-   * Stream command output from a Sprite exec
-   * @param {string} spriteId - Sprite ID
-   * @param {string} command - Command to execute
-   * @param {Function} onOutput - Callback for output: (data: string) => void
-   * @param {Object} [options] - Options
-   * @returns {Promise<Object>} Final exec result
+   * Stop a Machine.
+   * @param {string} machineId
+   * @returns {Promise<Object>}
    */
-  async streamCommand(spriteId, command, onOutput, options = {}) {
-    const { workdir = '/workspace', env = {} } = options;
+  async stopSprite(machineId) {
+    const response = await this.fetchFn(this._machinesUrl(`/${machineId}/stop`), {
+      method: 'POST',
+      headers: this._headers(false)
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to stop machine: ${response.status}`);
+    }
+    return response.json();
+  }
 
+  /**
+   * Start (wake) a stopped Machine.
+   * @param {string} machineId
+   * @returns {Promise<Object>}
+   */
+  async wakeSprite(machineId) {
+    const response = await this.fetchFn(this._machinesUrl(`/${machineId}/start`), {
+      method: 'POST',
+      headers: this._headers(false)
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to start machine: ${response.status}`);
+    }
+    return response.json();
+  }
+
+  /**
+   * Execute a command inside a running Machine.
+   * @param {string} machineId
+   * @param {string} command
+   * @param {Object} [options]
+   * @returns {Promise<Object>} { stdout, stderr, exit_code }
+   */
+  async sendCommand(machineId, command, options = {}) {
+    const { workdir = '/workspace', env } = options;
+
+    const response = await this.fetchFn(this._machinesUrl(`/${machineId}/exec`), {
+      method: 'POST',
+      headers: this._headers(),
+      body: JSON.stringify({
+        command: ['/bin/sh', '-c', `cd ${workdir} && ${command}`],
+        ...(env && { env })
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Exec error ${response.status}: ${errorText}`);
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Execute a command and deliver output line-by-line via callback.
+   * Fly exec is not streaming — we run sendCommand then split the result.
+   *
+   * @param {string} machineId
+   * @param {string} command
+   * @param {Function} onOutput - (line: string) => void
+   * @param {Object} [options]
+   * @returns {Promise<Object>} { success, exitCode }
+   */
+  async streamCommand(machineId, command, onOutput, options = {}) {
     try {
-      // Wake the sprite if sleeping
-      await this.wakeSprite(spriteId);
+      await this.wakeSprite(machineId).catch(() => {});
+      const result = await this.sendCommand(machineId, command, options);
 
-      const response = await this.fetchFn(`${this.baseUrl}/sprites/${spriteId}/exec`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.apiToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          command: ['/bin/sh', '-c', `cd ${workdir} && ${command}`],
-          env,
-          stream: true
-        })
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Sprite exec error: ${response.status} - ${errorText}`);
+      if (result.stdout) {
+        for (const line of result.stdout.split('\n')) {
+          if (line.trim()) onOutput(line);
+        }
+      }
+      if (result.stderr) {
+        for (const line of result.stderr.split('\n')) {
+          if (line.trim()) onOutput(`[stderr] ${line}`);
+        }
       }
 
-      // Stream the response
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let exitCode = 0;
-
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-
-          for (const line of lines) {
-            if (line.trim()) {
-              // Check for exit code in final message
-              try {
-                const parsed = JSON.parse(line);
-                if (parsed.exit_code !== undefined) {
-                  exitCode = parsed.exit_code;
-                } else if (parsed.output) {
-                  onOutput(parsed.output);
-                }
-              } catch {
-                onOutput(line);
-              }
-            }
-          }
-        }
-
-        if (buffer.trim()) {
-          onOutput(buffer);
-        }
-      } finally {
-        reader.releaseLock();
-      }
-
+      const exitCode = result.exit_code || 0;
       return { success: exitCode === 0, exitCode };
     } catch (error) {
-      this.emit('sprite:exec:error', { spriteId, command, error });
+      this.emit('sprite:exec:error', { machineId, command, error });
       throw error;
     }
   }
 
   /**
-   * Wake a sleeping Sprite
-   * @param {string} spriteId - Sprite ID
-   * @returns {Promise<Object>} Wake result
+   * Destroy a Machine (cleanup).
+   * @param {string} machineId
+   * @returns {Promise<void>}
    */
-  async wakeSprite(spriteId) {
-    try {
-      const status = await this.getSpriteStatus(spriteId);
-
-      if (status.state === 'sleeping' || status.state === 'suspended') {
-        const response = await this.fetchFn(`${this.baseUrl}/sprites/${spriteId}/wake`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${this.apiToken}`
-          }
-        });
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(`Failed to wake sprite: ${response.status} - ${errorText}`);
-        }
-
-        const result = await response.json();
-        this.emit('sprite:woken', { spriteId, result });
-
-        // Wait a bit for the sprite to fully wake
-        await this._sleep(1000);
-
-        return result;
-      }
-
-      // Already awake
-      return { state: status.state, alreadyAwake: true };
-    } catch (error) {
-      // If sprite doesn't exist or is stopped, this will fail
-      // Let the caller handle it
-      throw error;
+  async destroyMachine(machineId) {
+    const response = await this.fetchFn(this._machinesUrl(`/${machineId}`), {
+      method: 'DELETE',
+      headers: this._headers(false)
+    });
+    if (!response.ok && response.status !== 404) {
+      throw new Error(`Failed to destroy machine: ${response.status}`);
     }
   }
 }

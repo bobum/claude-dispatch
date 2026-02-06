@@ -16,6 +16,8 @@
     "dev:opencode": "node --watch src/opencode-bot.js",
     "dev:teams:opencode": "node --watch src/teams-opencode-bot.js",
     "dev:discord:opencode": "node --watch src/discord-opencode-bot.js",
+    "start:sprite": "node src/sprite-bot.js",
+    "dev:sprite": "node --watch src/sprite-bot.js",
     "test": "node --test tests/*.test.js"
   },
   "keywords": [

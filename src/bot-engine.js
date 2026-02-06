@@ -38,6 +38,75 @@ function createBotEngine(options) {
   }
 
   // ============================================
+  // MESSAGE BATCHER (rate-limit protection)
+  // ============================================
+
+  /**
+   * Create a message batcher that buffers output and flushes as
+   * code-block messages. Prevents hitting chat API rate limits.
+   * @param {string} channelId
+   * @returns {Object} { push(text), flush(), destroy() }
+   */
+  function createMessageBatcher(channelId) {
+    const buffer = [];
+    let flushTimer = null;
+    let destroyed = false;
+    let lastSendTime = 0;
+    const MIN_SEND_INTERVAL = 200; // ms between chat API calls
+    const FLUSH_DELAY = 500; // buffer for 500ms
+    const MAX_LINES = 5; // or 5 lines, whichever first
+
+    function scheduleFlush() {
+      if (flushTimer || destroyed) return;
+      flushTimer = setTimeout(() => {
+        flushTimer = null;
+        flush();
+      }, FLUSH_DELAY);
+    }
+
+    async function flush() {
+      if (buffer.length === 0 || destroyed) return;
+
+      const text = buffer.splice(0).join('\n');
+      if (!text.trim()) return;
+
+      // Rate limit: wait if we sent too recently
+      const elapsed = Date.now() - lastSendTime;
+      if (elapsed < MIN_SEND_INTERVAL) {
+        await new Promise(r => setTimeout(r, MIN_SEND_INTERVAL - elapsed));
+      }
+
+      try {
+        await chatProvider.sendLongMessage(channelId, '```\n' + text + '\n```');
+        lastSendTime = Date.now();
+      } catch (e) {
+        console.error('[BotEngine] Batcher send error:', e.message);
+      }
+    }
+
+    return {
+      push(text) {
+        if (destroyed) return;
+        buffer.push(text);
+        if (buffer.length >= MAX_LINES) {
+          if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+          flush();
+        } else {
+          scheduleFlush();
+        }
+      },
+      async flush() {
+        if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+        await flush();
+      },
+      destroy() {
+        destroyed = true;
+        if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+      }
+    };
+  }
+
+  // ============================================
   // COMMAND HANDLERS
   // ============================================
 
@@ -57,7 +126,7 @@ function createBotEngine(options) {
     const [instanceId, ...pathParts] = parts;
     const projectDir = pathParts.join(' ');
 
-    const result = aiBackend.startInstance(instanceId, projectDir, ctx.channelId);
+    const result = await aiBackend.startInstance(instanceId, projectDir, ctx.channelId);
 
     if (result.success) {
       if (chatProvider.supportsCards) {
@@ -219,7 +288,7 @@ function createBotEngine(options) {
     const instanceId = `run-${Date.now()}`;
     const projectDir = parsed.repo || 'default';
 
-    const startResult = aiBackend.startInstance(instanceId, projectDir, ctx.channelId);
+    const startResult = await aiBackend.startInstance(instanceId, projectDir, ctx.channelId);
     if (!startResult.success) {
       await ctx.reply(`Failed to start job: ${startResult.error}`);
       return;
@@ -249,16 +318,10 @@ function createBotEngine(options) {
     // Show typing indicator
     await chatProvider.sendTypingIndicator(ctx.channelId);
 
-    // Stream logs back
-    const streamedTexts = new Set();
+    // Use message batcher for rate-limit protection
+    const batcher = createMessageBatcher(ctx.channelId);
     const onMessage = async (text) => {
-      if (streamedTexts.has(text)) return;
-      streamedTexts.add(text);
-      try {
-        await chatProvider.sendLongMessage(ctx.channelId, text);
-      } catch (e) {
-        console.error('[BotEngine] Failed to stream run message:', e);
-      }
+      batcher.push(text);
     };
 
     // Execute the job
@@ -269,7 +332,9 @@ function createBotEngine(options) {
       image: parsed.image
     });
 
-    // Clean up the temporary instance
+    // Flush remaining output and clean up
+    await batcher.flush();
+    batcher.destroy();
     aiBackend.stopInstance(instanceId);
 
     // Send final status

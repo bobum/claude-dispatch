@@ -1,97 +1,162 @@
 # Sprite Setup Guide
 
-This guide explains how to set up **Sprites** for running AI agents in isolated, ephemeral micro-VMs.
+This guide explains how to set up **Sprites** for running AI agents in isolated, ephemeral cloud VMs on [Fly.io](https://fly.io).
 
 ## What are Sprites?
 
-Sprites are ephemeral micro-VMs that:
-- **Auto-sleep** when idle (you only pay for compute used)
-- Provide **isolated environments** per job
-- Support **persistent sessions** (wake on demand)
-- Run on [Fly.io Machines](https://fly.io/docs/machines/)
+Sprites are ephemeral Fly Machines that:
+- Provide **isolated environments** per job (no state pollution between tasks)
+- Support **one-shot jobs** (spawn, run, terminate) and **persistent sessions** (wake on demand)
+- Stream agent output **back to chat in real-time** via HTTP webhooks
+- Run on [Fly.io Machines](https://fly.io/docs/machines/) with usage-based billing
+
+## Architecture Overview
+
+```
+           Fly.io Private Network (6PN)
+┌──────────────────────────────────────────────────────────┐
+│                                                          │
+│  OPEN-DISPATCH (open-dispatch.internal)                  │
+│  ┌────────────────┐  ┌──────────────────────────────┐    │
+│  │ bot-engine      │  │ Webhook Server (:8080)       │    │
+│  │ onMessage() ◄───┼──│ POST /webhooks/logs          │    │
+│  │ callback        │  │ POST /webhooks/status        │    │
+│  └──────┬─────────┘  │ POST /webhooks/artifacts     │    │
+│         │             │ GET  /health                  │    │
+│         ▼             └──────────────▲───────────────┘    │
+│  chatProvider                        │                    │
+│  .sendLongMessage()                  │ HTTP (private net) │
+│                                      │                    │
+│  SPRITE MACHINE (ephemeral)          │                    │
+│  ┌───────────────────────────────────┼─────┐              │
+│  │ sprite-reporter (sidecar)         │     │              │
+│  │  1. Clone repo                    │     │              │
+│  │  2. Run agent (claude/opencode)   │     │              │
+│  │  3. stdout → POST /webhooks/logs ─┘     │              │
+│  │  4. On exit → POST /webhooks/status     │              │
+│  │  5. Artifacts → POST /webhooks/artifacts│              │
+│  └─────────────────────────────────────────┘              │
+└──────────────────────────────────────────────────────────┘
+         │
+    Slack / Teams / Discord (via Socket Mode / HTTPS / Gateway)
+```
+
+**How it works:**
+1. User runs `/od-run <task>` in any chat provider
+2. Open-Dispatch creates a Job with a unique ID and auth token
+3. Open-Dispatch spawns a Fly Machine via the [Machines API](https://fly.io/docs/machines/api/)
+4. The Sprite's sidecar (`sprite-reporter`) clones the repo and runs the agent
+5. Agent output is POSTed to Open-Dispatch's webhook server over Fly.io's private network
+6. Open-Dispatch relays output to the chat channel in real-time
+7. When the agent finishes, the Sprite reports final status and auto-destroys
 
 ## Prerequisites
 
 - A [Fly.io](https://fly.io) account
 - Fly CLI installed (`brew install flyctl` or see [docs](https://fly.io/docs/hands-on/install-flyctl/))
-- A Docker image with your agent tools (Claude Code, OpenCode, etc.)
+- A Docker image with your agent tools and the Open-Dispatch sidecar installed
 
-## Step 1: Get Fly.io API Token
+## Step 1: Create a Fly App for Sprites
 
 ```bash
 # Login to Fly.io
 fly auth login
 
-# Create an API token
+# Create an app for your Sprites (this is just a namespace — no deployment yet)
+fly apps create my-sprites
+```
+
+## Step 2: Get a Fly.io API Token
+
+```bash
+# Create a deploy token scoped to your app
 fly tokens create deploy -x 999999h
 
-# Copy the token - this is your SPRITE_API_TOKEN
+# Copy the token — this is your FLY_API_TOKEN
 ```
 
-Save the token in your `.env` file:
-```bash
-SPRITE_API_TOKEN=your-fly-api-token
-```
+## Step 3: Build Your Agent Image with Sidecar
 
-## Step 2: Create Your Agent Image
-
-Create a Dockerfile with the tools your agents need:
+Open-Dispatch publishes a **sidecar image** containing the webhook relay scripts.
+Install it into your agent image using multi-stage Docker build:
 
 ```dockerfile
-# Example: Node.js agent with Claude Code
-FROM node:20-slim
+# Pull the sidecar scripts
+FROM ghcr.io/bobum/open-dispatch/sidecar:latest AS sidecar
 
-# Install git and basic tools
-RUN apt-get update && apt-get install -y git curl && rm -rf /var/lib/apt/lists/*
+# Your agent base image
+FROM node:22-bookworm
 
-# Install Claude Code CLI
+# Install the sidecar (sprite-reporter + output-relay.js)
+COPY --from=sidecar /sidecar/ /usr/local/bin/
+
+# Install your agent tools
 RUN npm install -g @anthropic-ai/claude-code
 
-# Set up workspace
+# Install any other dependencies your agents need
+RUN apt-get update && apt-get install -y git curl jq && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /workspace
 
-# Default command (for persistent mode)
-CMD ["tail", "-f", "/dev/null"]
+# Use sprite-reporter as the entry point
+ENTRYPOINT ["/usr/local/bin/sprite-reporter"]
 ```
 
 Build and push to Fly.io registry:
 ```bash
-# Login to Fly registry
 fly auth docker
-
-# Build and push
-docker build -t registry.fly.io/your-app/agent:latest .
-docker push registry.fly.io/your-app/agent:latest
+docker build -t registry.fly.io/my-sprites/agent:latest .
+docker push registry.fly.io/my-sprites/agent:latest
 ```
 
-## Step 3: Configure Open Dispatch
+## Step 4: Deploy Open-Dispatch to Fly.io
 
-Add to your `.env`:
+Open-Dispatch itself also runs as a Fly Machine. It needs to be on the same
+Fly.io private network (6PN) as the Sprites so they can communicate via
+`.internal` DNS.
+
 ```bash
-# Required: Fly.io API token
-SPRITE_API_TOKEN=your-fly-api-token
-
-# Optional: Custom API URL (default uses Fly Machines API)
-# SPRITE_API_URL=https://api.machines.dev/v1
-
-# Optional: Your default agent image
-SPRITE_BASE_IMAGE=registry.fly.io/your-app/agent:latest
-
-# Optional: Preferred region (default: iad)
-SPRITE_REGION=iad
-
-# Optional: Agent type - 'claude' or 'opencode'
-SPRITE_AGENT_TYPE=claude
+cd open-dispatch
+fly launch   # Creates app and fly.toml
+fly deploy
 ```
 
-## Step 4: Run with Sprite Backend
+## Step 5: Configure Environment
 
-Start Open Dispatch with the Sprite backend:
+Add to your `.env` (or set as Fly secrets):
+
 ```bash
-# You'll need to create a sprite-bot.js entry point
-# or modify an existing bot to use sprite-core
-node src/your-sprite-bot.js
+# Required: Chat provider
+CHAT_PROVIDER=slack   # or: teams, discord
+
+# Required: Fly.io Sprite config
+FLY_API_TOKEN=your-fly-api-token
+FLY_SPRITE_APP=my-sprites
+SPRITE_IMAGE=registry.fly.io/my-sprites/agent:latest
+
+# Optional: Webhook URL (default uses Fly.io private networking)
+# OPEN_DISPATCH_URL=http://open-dispatch.internal:8080
+
+# Per-provider config (see platform setup guides)
+# Slack:   SLACK_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_SIGNING_SECRET
+# Teams:   TEAMS_APP_ID, TEAMS_APP_PASSWORD
+# Discord: DISCORD_BOT_TOKEN, DISCORD_CLIENT_ID
+
+# Passed through to Sprites automatically:
+# GH_TOKEN=your-github-token
+# ANTHROPIC_API_KEY=your-anthropic-key
 ```
+
+## Step 6: Run
+
+```bash
+npm run start:sprite
+```
+
+This starts:
+- The chat provider (Slack/Teams/Discord) connection
+- The webhook server on port 8080 (receives output from Sprites)
+- The stale job reaper (cleans up timed-out jobs every 60s)
 
 ## Usage
 
@@ -99,23 +164,24 @@ node src/your-sprite-bot.js
 
 Run a single task in a fresh Sprite:
 ```
-/od-run --repo github.com/user/project "run the tests"
-/od-run --image my-custom-agent:v1 --repo github.com/user/project "lint the code"
+/od-run --repo owner/project "run the tests"
+/od-run --image my-custom:v1 --repo owner/project "lint the code"
+/od-run --branch feature-x --repo owner/project "fix the failing tests"
 ```
 
 Options:
-- `--repo <url>` - GitHub repository to clone
+- `--repo <owner/repo>` - GitHub repository to clone
 - `--branch <name>` - Branch to checkout (default: main)
-- `--image <image>` - Docker image to use (overrides default)
+- `--image <image>` - Docker image (overrides SPRITE_IMAGE)
 
 ### Persistent Sessions (`/od-start --persistent`)
 
-Start a long-running Sprite that maintains state:
+Start a long-running Sprite that maintains state between messages:
 ```
-/od-start mybot --repo github.com/user/project --persistent
+/od-start mybot --repo owner/project --persistent
 ```
 
-Then send messages:
+Then chat normally:
 ```
 "run the tests"
 "fix the failing tests"
@@ -134,147 +200,133 @@ View recent job history:
 /od-jobs
 ```
 
-## How It Works
+## Webhook Endpoints
 
-### One-Shot Mode
+The webhook server runs on port 8080 and exposes these endpoints:
 
-```
-/od-run "task"
-    │
-    ▼
-┌─────────────┐
-│ Spawn Sprite│ ← Fresh VM with your image
-└─────────────┘
-    │
-    ▼
-┌─────────────┐
-│ Clone repo  │
-│ Run command │
-│ Stream logs │
-└─────────────┘
-    │
-    ▼
-┌─────────────┐
-│ Collect     │
-│ artifacts   │
-└─────────────┘
-    │
-    ▼
-┌─────────────┐
-│ Terminate   │
-└─────────────┘
-```
+| Endpoint | Method | Body | Purpose |
+|----------|--------|------|---------|
+| `/health` | GET | — | Liveness check for Fly.io |
+| `/webhooks/logs` | POST | `{jobId, text}` | Real-time agent output |
+| `/webhooks/status` | POST | `{jobId, status, exitCode, error}` | Job state transitions |
+| `/webhooks/artifacts` | POST | `{jobId, artifacts: [{name, url, type}]}` | PR URLs, test logs, etc. |
 
-### Persistent Mode
+All webhook calls require `Authorization: Bearer <JOB_TOKEN>` — a per-job token
+generated by Open-Dispatch and passed to the Sprite at spawn time.
 
-```
-/od-start --persistent
-    │
-    ▼
-┌─────────────┐
-│ Spawn Sprite│ ← Long-running VM
-│ Clone repo  │
-│ Keep alive  │
-└─────────────┘
-    │
-    ▼
-"message 1" ──► Wake → Execute → Sleep
-    │
-"message 2" ──► Wake → Execute → Sleep
-    │
-"message 3" ──► Wake → Execute → Sleep
-    │
-/od-stop ─────► Terminate
-```
+## Sidecar Scripts
 
-## Custom Images
+The sidecar image contains two scripts:
 
-### Minimal Agent Image
+**`sprite-reporter`** (Bash) — Entry point for Sprite Machines:
+1. Validates required env vars (`JOB_ID`, `JOB_TOKEN`, `OPEN_DISPATCH_URL`, `COMMAND`)
+2. Clones the repo (if `REPO` is set)
+3. Runs the agent command
+4. Pipes output through `output-relay.js`
+5. Reports final status to `/webhooks/status`
 
+**`output-relay.js`** (Node.js) — Buffered output relay:
+- Reads agent stdout line-by-line
+- Buffers output for 500ms or 20 lines
+- POSTs chunks to `/webhooks/logs`
+- Passes through to stdout for Fly.io log capture
+
+## Custom Agent Images
+
+### Claude Code Agent
 ```dockerfile
-FROM alpine:latest
+FROM ghcr.io/bobum/open-dispatch/sidecar:latest AS sidecar
+FROM node:22-bookworm
 
-RUN apk add --no-cache git bash curl nodejs npm
-
-# Install your agent CLI
-RUN npm install -g opencode
-
-WORKDIR /workspace
-CMD ["tail", "-f", "/dev/null"]
-```
-
-### Full-Featured Image with Playwright
-
-```dockerfile
-FROM mcr.microsoft.com/playwright:v1.40.0-focal
-
+COPY --from=sidecar /sidecar/ /usr/local/bin/
 RUN npm install -g @anthropic-ai/claude-code
-
-# Pre-install browsers
-RUN npx playwright install chromium
-
+RUN apt-get update && apt-get install -y git curl jq && rm -rf /var/lib/apt/lists/*
 WORKDIR /workspace
-CMD ["tail", "-f", "/dev/null"]
+ENTRYPOINT ["/usr/local/bin/sprite-reporter"]
 ```
 
-### Python Agent Image
-
+### OpenCode Agent
 ```dockerfile
-FROM python:3.11-slim
+FROM ghcr.io/bobum/open-dispatch/sidecar:latest AS sidecar
+FROM golang:1.22-bookworm
 
-RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
-RUN pip install opencode-cli
-
+COPY --from=sidecar /sidecar/ /usr/local/bin/
+RUN go install github.com/opencode-ai/opencode@latest
+RUN apt-get update && apt-get install -y git curl jq nodejs && rm -rf /var/lib/apt/lists/*
 WORKDIR /workspace
-CMD ["tail", "-f", "/dev/null"]
+ENTRYPOINT ["/usr/local/bin/sprite-reporter"]
+```
+
+### .NET API Agent (with database access)
+```dockerfile
+FROM ghcr.io/bobum/open-dispatch/sidecar:latest AS sidecar
+FROM mcr.microsoft.com/dotnet/sdk:10.0-bookworm-slim
+
+COPY --from=sidecar /sidecar/ /usr/local/bin/
+RUN apt-get update && apt-get install -y git curl jq nodejs npm && rm -rf /var/lib/apt/lists/*
+RUN npm install -g @anthropic-ai/claude-code
+WORKDIR /workspace
+ENTRYPOINT ["/usr/local/bin/sprite-reporter"]
 ```
 
 ## Environment Variables Reference
 
+### Open-Dispatch (host)
+
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `SPRITE_API_TOKEN` | Yes | - | Fly.io API token |
-| `SPRITE_API_URL` | No | `https://api.machines.dev/v1` | Machines API URL |
-| `SPRITE_BASE_IMAGE` | No | `open-dispatch/agent:latest` | Default Docker image |
-| `SPRITE_REGION` | No | `iad` | Fly.io region |
+| `CHAT_PROVIDER` | Yes | — | Chat platform: `slack`, `teams`, `discord` |
+| `FLY_API_TOKEN` | Yes | — | Fly.io API token |
+| `FLY_SPRITE_APP` | Yes | — | Fly app name for Sprite Machines |
+| `SPRITE_IMAGE` | Yes | — | Default Docker image for Sprites |
+| `OPEN_DISPATCH_URL` | No | `http://open-dispatch.internal:8080` | Webhook callback URL |
+| `WEBHOOK_PORT` | No | `8080` | Webhook server listen port |
+| `FLY_REGION` | No | `iad` | Preferred Fly.io region |
 | `SPRITE_AGENT_TYPE` | No | `claude` | Agent CLI: `claude` or `opencode` |
+
+### Sprite (injected automatically)
+
+| Variable | Description |
+|----------|-------------|
+| `JOB_ID` | Unique job identifier |
+| `JOB_TOKEN` | Auth token for webhook calls |
+| `OPEN_DISPATCH_URL` | Webhook base URL |
+| `REPO` | GitHub repo to clone (owner/repo) |
+| `BRANCH` | Git branch |
+| `COMMAND` | Agent command to execute |
+| `GH_TOKEN` | GitHub token (passed through from host) |
+| `ANTHROPIC_API_KEY` | Anthropic key (passed through from host) |
+| `DATABASE_URL` | Database URL (passed through if set on host) |
 
 ## Troubleshooting
 
-### "No API token provided"
-
-Set `SPRITE_API_TOKEN` in your `.env` file.
+### "Missing required env vars"
+Set `FLY_API_TOKEN`, `FLY_SPRITE_APP`, `SPRITE_IMAGE`, and `CHAT_PROVIDER` in your `.env`.
 
 ### "Failed to spawn Sprite"
-
-- Check your Fly.io token is valid: `fly auth whoami`
+- Check your Fly.io token: `fly auth whoami`
 - Verify the image exists: `fly image show your-image`
 - Check region availability: `fly platform regions`
 
-### "Sprite exec error"
+### Sprites can't reach Open-Dispatch
+- Ensure both Open-Dispatch and Sprites are in the same Fly.io organization
+- Fly.io 6PN (private networking) requires apps in the same org
+- Check the webhook URL uses `.internal` DNS
 
-- Ensure your image has the required tools installed
-- Check the command syntax
-- Verify the repo URL is accessible
+### Agent output not appearing in chat
+- Check `/health` endpoint: `curl http://open-dispatch.internal:8080/health`
+- Verify the sidecar is installed: the Sprite image must have `/usr/local/bin/sprite-reporter`
+- Check Fly.io logs: `fly logs -a your-sprite-app`
 
-### Sprite not waking
-
-- Check Sprite status: the orchestrator logs will show wake attempts
-- Sprites may be stopped if they exceed idle timeout
-- Use `/od-list` to see active instances
-
-## Cost Optimization
-
-- **Use one-shot mode** for independent tasks
-- **Use persistent mode** for multi-step conversations
-- Sprites auto-sleep after 30 minutes of inactivity
-- Choose the smallest image that meets your needs
-- Use regional images for faster cold starts
+### Job timed out
+- Default timeout is 10 minutes
+- The stale job reaper runs every 60 seconds
+- Check if the agent command is hanging
 
 ## Security Notes
 
-- API tokens have full access to your Fly.io account
-- Never commit tokens to version control
-- Use environment variables or secrets management
-- Consider using scoped tokens when available
-- Sprites have network access - be mindful of what repos you clone
+- **Job tokens are per-job**: Each Sprite gets a unique HMAC token valid only for its job
+- **Private networking**: Webhooks travel over Fly.io 6PN (WireGuard mesh), not the public internet
+- **No shared secrets**: Sprites cannot access other jobs' data
+- API tokens and secrets are injected via env vars, never baked into images
+- Use `GH_TOKEN` with minimal required scopes
