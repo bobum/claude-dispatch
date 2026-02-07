@@ -53,6 +53,16 @@ function createWebhookServer({ jobs, port = 8080 }) {
    */
   function parseBody(req) {
     return new Promise((resolve, reject) => {
+      // Early rejection based on Content-Length header when present
+      const contentLength = parseInt(req.headers['content-length'], 10);
+      if (contentLength > MAX_BODY_SIZE) {
+        req.resume(); // Drain the request body
+        const err = new Error('Body too large');
+        err.code = 'BODY_TOO_LARGE';
+        reject(err);
+        return;
+      }
+
       let data = '';
       let size = 0;
       let rejected = false;
@@ -61,8 +71,6 @@ function createWebhookServer({ jobs, port = 8080 }) {
         size += chunk.length;
         if (size > MAX_BODY_SIZE) {
           rejected = true;
-          // Resume and discard remaining data so the connection stays open
-          // long enough for us to send the 413 response.
           req.resume();
           const err = new Error('Body too large');
           err.code = 'BODY_TOO_LARGE';

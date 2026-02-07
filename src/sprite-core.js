@@ -340,7 +340,7 @@ function createInstanceManager(options = {}) {
   // buildArgs constructs an argv array for direct process execution,
   // so we must not apply shell-style escaping here. The raw strings
   // are passed as-is to the underlying CLI.
-  function buildArgs(message, projectDir, sessionId) {
+  function buildArgs(message, sessionId) {
     if (agentType === 'opencode') {
       return ['run', '--format', 'json', '--session', sessionId, '--', message];
     }
@@ -372,7 +372,7 @@ function createInstanceManager(options = {}) {
           }
 
           if (job.onComplete) {
-            job.onComplete(job).catch(e => {
+            Promise.resolve(job.onComplete(job)).catch(e => {
               console.error(`[Sprite] onComplete error during reap:`, e.message);
             });
           }

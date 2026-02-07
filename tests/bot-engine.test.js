@@ -341,8 +341,9 @@ describe('Unhandled rejection handlers in entry points', () => {
       const source = fs.readFileSync(ep.path, 'utf8');
       assert.ok(
         source.includes('unhandledRejection') ||
-        source.includes('uncaughtException'),
-        `${ep.name} should have unhandledRejection or uncaughtException handler`
+        source.includes('uncaughtException') ||
+        source.includes('registerFatalHandlers'),
+        `${ep.name} should have unhandledRejection or uncaughtException handler (or use registerFatalHandlers)`
       );
     });
   }

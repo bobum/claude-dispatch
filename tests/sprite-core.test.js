@@ -295,7 +295,7 @@ describe('Sprite Instance Manager', () => {
     it('should return an args array for claude by default', async () => {
       await manager.startInstance('test', 'owner/repo', 'C123');
       const instance = manager.getInstance('test');
-      const args = manager.buildArgs('hello world', 'owner/repo', instance.sessionId);
+      const args = manager.buildArgs('hello world', instance.sessionId);
       assert.ok(Array.isArray(args), 'buildArgs should return an array');
       assert.ok(args.length > 0);
       // Default agent is claude — args should include its flags
@@ -382,7 +382,7 @@ describe('Sprite Instance Manager', () => {
       await manager.startInstance('args-raw', 'owner/repo', 'C210');
       const instance = manager.getInstance('args-raw');
       const msg = 'run `rm -rf /` and $(whoami)';
-      const args = manager.buildArgs(msg, 'owner/repo', instance.sessionId);
+      const args = manager.buildArgs(msg, instance.sessionId);
       // buildArgs is for direct process execution — no escaping
       assert.ok(args.includes(msg), 'Raw message should be in args as-is');
     });
@@ -390,7 +390,7 @@ describe('Sprite Instance Manager', () => {
     it('should include session ID as raw string', async () => {
       await manager.startInstance('args-session', 'owner/repo', 'C211');
       const instance = manager.getInstance('args-session');
-      const args = manager.buildArgs('hello', 'owner/repo', instance.sessionId);
+      const args = manager.buildArgs('hello', instance.sessionId);
       assert.ok(args.includes(instance.sessionId), 'Session ID should be in args as-is');
     });
   });

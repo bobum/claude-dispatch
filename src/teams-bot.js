@@ -5,8 +5,8 @@
  * For OpenCode support (75+ AI providers), use teams-opencode-bot.js instead.
  */
 
-process.on('unhandledRejection', (err) => { console.error('[FATAL] Unhandled rejection:', err); });
-process.on('uncaughtException', (err) => { console.error('[FATAL] Uncaught exception:', err); process.exit(1); });
+const { registerFatalHandlers } = require('./process-handlers');
+registerFatalHandlers();
 
 require('dotenv').config();
 
