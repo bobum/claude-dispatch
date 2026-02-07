@@ -263,6 +263,7 @@ function createInstanceManager(options = {}) {
           jobId: completedJob.jobId,
           artifacts: completedJob.artifacts,
           exitCode: completedJob.exitCode,
+          error: completedJob.error,
           streamed: true
         });
       };
