@@ -273,4 +273,174 @@ describe('Webhook Server', () => {
       assert.strictEqual(res.status, 404);
     });
   });
+
+  // ===========================================================
+  // Webhook body size limits
+  // ===========================================================
+  describe('body size limits', () => {
+    /**
+     * Send raw data (not necessarily valid JSON) to test body size enforcement.
+     * Uses a raw HTTP request to bypass the JSON serialization in the
+     * normal `post` helper, allowing us to send oversized payloads.
+     */
+    function postRaw(port, path, rawBody, token) {
+      return new Promise((resolve, reject) => {
+        const headers = {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(rawBody)
+        };
+        if (token) {
+          headers['Authorization'] = `Bearer ${token}`;
+        }
+
+        const req = http.request({
+          hostname: '127.0.0.1',
+          port,
+          path,
+          method: 'POST',
+          headers
+        }, (res) => {
+          let data = '';
+          res.on('data', chunk => { data += chunk; });
+          res.on('end', () => {
+            let body;
+            try {
+              body = data ? JSON.parse(data) : {};
+            } catch {
+              body = { raw: data };
+            }
+            resolve({ status: res.statusCode, body });
+          });
+        });
+        req.on('error', reject);
+        req.write(rawBody);
+        req.end();
+      });
+    }
+
+    it('should reject bodies larger than the size limit with 413', async () => {
+      // Create a payload that exceeds a reasonable body size limit.
+      // The fix should enforce a limit (e.g. 1MB). We'll try 2MB.
+      const oversizedText = 'x'.repeat(2 * 1024 * 1024);
+      const oversizedBody = JSON.stringify({ jobId: 'fake', text: oversizedText });
+
+      const res = await postRaw(port, '/webhooks/logs', oversizedBody, 'tok');
+      // Should get 413 Payload Too Large (or 400 if the server closes the connection)
+      assert.ok(
+        res.status === 413 || res.status === 400,
+        `Expected 413 or 400 for oversized body, got ${res.status}`
+      );
+    });
+
+    it('should accept normal-sized bodies', async () => {
+      const job = new Job({ repo: 'r', command: 'c', channelId: 'ch', jobToken: 'tok' });
+      jobs.set(job.jobId, job);
+
+      const normalBody = JSON.stringify({ jobId: job.jobId, text: 'normal message' });
+      const res = await postRaw(port, '/webhooks/logs', normalBody, 'tok');
+      assert.strictEqual(res.status, 200);
+    });
+
+    it('should accept a body exactly at a reasonable size', async () => {
+      const job = new Job({ repo: 'r', command: 'c', channelId: 'ch', jobToken: 'tok' });
+      jobs.set(job.jobId, job);
+
+      // Create text that is large but under a typical 1MB limit
+      // (accounting for the JSON envelope overhead)
+      const text = 'a'.repeat(500 * 1024); // 500KB
+      const body = JSON.stringify({ jobId: job.jobId, text });
+      const res = await postRaw(port, '/webhooks/logs', body, 'tok');
+      assert.strictEqual(res.status, 200);
+    });
+  });
+
+  // ===========================================================
+  // Job cleanup: jobs removed from Map after terminal status
+  // ===========================================================
+  describe('job cleanup after webhook status', () => {
+    it('should fire onComplete on completed status and job remains accessible', async () => {
+      let completedJobId = null;
+      const job = new Job({
+        repo: 'r', command: 'c', channelId: 'ch', jobToken: 'tok',
+        onComplete: async (j) => { completedJobId = j.jobId; }
+      });
+      job.start('machine-1');
+      jobs.set(job.jobId, job);
+
+      await post(port, '/webhooks/status', {
+        jobId: job.jobId, status: 'completed', exitCode: 0
+      }, 'tok');
+
+      assert.strictEqual(completedJobId, job.jobId);
+      assert.strictEqual(job.status, JobStatus.COMPLETED);
+    });
+
+    it('should fire onComplete on failed status and job remains accessible', async () => {
+      let completedJobId = null;
+      const job = new Job({
+        repo: 'r', command: 'c', channelId: 'ch', jobToken: 'tok',
+        onComplete: async (j) => { completedJobId = j.jobId; }
+      });
+      job.start('machine-1');
+      jobs.set(job.jobId, job);
+
+      await post(port, '/webhooks/status', {
+        jobId: job.jobId, status: 'failed', exitCode: 1, error: 'boom'
+      }, 'tok');
+
+      assert.strictEqual(completedJobId, job.jobId);
+      assert.strictEqual(job.status, JobStatus.FAILED);
+    });
+
+    it('should not fire onComplete for running status update', async () => {
+      let onCompleteCalled = false;
+      const job = new Job({
+        repo: 'r', command: 'c', channelId: 'ch', jobToken: 'tok',
+        onComplete: async () => { onCompleteCalled = true; }
+      });
+      job.start('machine-1');
+      jobs.set(job.jobId, job);
+
+      await post(port, '/webhooks/status', {
+        jobId: job.jobId, status: 'running'
+      }, 'tok');
+
+      assert.strictEqual(onCompleteCalled, false,
+        'onComplete should not fire for running status');
+      assert.strictEqual(job.status, JobStatus.RUNNING);
+    });
+
+    it('should handle onComplete errors without crashing', async () => {
+      const job = new Job({
+        repo: 'r', command: 'c', channelId: 'ch', jobToken: 'tok',
+        onComplete: async () => { throw new Error('callback exploded'); }
+      });
+      job.start('machine-1');
+      jobs.set(job.jobId, job);
+
+      // This should not throw — the webhook server should catch onComplete errors
+      const res = await post(port, '/webhooks/status', {
+        jobId: job.jobId, status: 'completed', exitCode: 0
+      }, 'tok');
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(job.status, JobStatus.COMPLETED);
+    });
+
+    it('should handle onMessage errors without crashing', async () => {
+      const job = new Job({
+        repo: 'r', command: 'c', channelId: 'ch', jobToken: 'tok',
+        onMessage: async () => { throw new Error('message callback exploded'); }
+      });
+      jobs.set(job.jobId, job);
+
+      // This should not throw — the webhook server should catch onMessage errors
+      const res = await post(port, '/webhooks/logs', {
+        jobId: job.jobId, text: 'some output'
+      }, 'tok');
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(job.logs.length, 1);
+    });
+  });
 });

@@ -60,7 +60,7 @@ function createBotEngine(options) {
       if (flushTimer || destroyed) return;
       flushTimer = setTimeout(() => {
         flushTimer = null;
-        flush();
+        flush().catch(err => console.error('[bot-engine] Flush error:', err));
       }, FLUSH_DELAY);
     }
 
@@ -90,7 +90,7 @@ function createBotEngine(options) {
         buffer.push(text);
         if (buffer.length >= MAX_LINES) {
           if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
-          flush();
+          flush().catch(err => console.error('[bot-engine] Flush error:', err));
         } else {
           scheduleFlush();
         }

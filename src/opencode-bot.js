@@ -1,3 +1,6 @@
+process.on('unhandledRejection', (err) => { console.error('[FATAL] Unhandled rejection:', err); });
+process.on('uncaughtException', (err) => { console.error('[FATAL] Uncaught exception:', err); process.exit(1); });
+
 require('dotenv').config();
 
 const { App } = require('@slack/bolt');
@@ -420,3 +423,16 @@ app.command('/od-send', async ({ command, ack, respond }) => {
     console.log(`Using model: ${OPENCODE_MODEL}`);
   }
 })();
+
+// Graceful shutdown
+process.on('SIGINT', async () => {
+  console.log('\nShutting down...');
+  await app.stop();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('\nShutting down...');
+  await app.stop();
+  process.exit(0);
+});

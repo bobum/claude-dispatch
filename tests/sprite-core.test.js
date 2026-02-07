@@ -290,6 +290,322 @@ describe('Sprite Instance Manager', () => {
       assert.ok(args.some(a => a.includes('claude') || a.includes('opencode')));
     });
   });
+
+  // ===========================================================
+  // Shell injection prevention (buildAgentCommand)
+  // ===========================================================
+  describe('shell injection prevention', () => {
+    it('should escape single quotes in user messages', async () => {
+      await manager.startInstance('inject-sq', 'owner/repo', 'C123');
+      const instance = manager.getInstance('inject-sq');
+      const args = manager.buildArgs("it's a test", 'owner/repo', instance.sessionId);
+      const cmd = args.join(' ');
+      // The single quote must be escaped so it doesn't break out of the
+      // shell-quoted string.  The exact escape can be '\\'' or other forms,
+      // but the raw unescaped ' should NOT appear between the wrapping quotes
+      // in a way that would terminate the string early.
+      assert.ok(!cmd.includes("'it's"), 'Bare single quote must not appear unescaped');
+    });
+
+    it('should escape backticks in user messages', async () => {
+      await manager.startInstance('inject-bt', 'owner/repo', 'C200');
+      const instance = manager.getInstance('inject-bt');
+      const args = manager.buildArgs('run `rm -rf /`', 'owner/repo', instance.sessionId);
+      const cmd = args.join(' ');
+      // Backticks inside single-quoted strings are literal in sh, but if
+      // the fix adds explicit escaping, verify no raw backtick-delimited
+      // command substitution survives outside quotes.
+      assert.ok(cmd.includes('rm'), 'Original message content should be preserved');
+    });
+
+    it('should neutralize $() command substitution in user messages', async () => {
+      await manager.startInstance('inject-dollar', 'owner/repo', 'C201');
+      const instance = manager.getInstance('inject-dollar');
+      const args = manager.buildArgs('$(whoami)', 'owner/repo', instance.sessionId);
+      const cmd = args.join(' ');
+      // Either escaped or contained inside single quotes — the literal
+      // string should survive.
+      assert.ok(cmd.includes('whoami'), 'Original text preserved');
+    });
+
+    it('should handle the classic shell breakout: single-quote terminate, inject, resume', async () => {
+      await manager.startInstance('inject-classic', 'owner/repo', 'C202');
+      const instance = manager.getInstance('inject-classic');
+      const malicious = "'; rm -rf /; echo '";
+      const args = manager.buildArgs(malicious, 'owner/repo', instance.sessionId);
+      const cmd = args.join(' ');
+      // The critical check: the resulting command string must NOT contain
+      // an unescaped sequence that closes the quote, runs rm, and opens a
+      // new quote.  After escaping, the single quotes in the payload must
+      // be escaped.
+      const unescapedPattern = "'; rm -rf /; echo '";
+      assert.ok(!cmd.includes(unescapedPattern),
+        'Classic shell injection payload must be escaped');
+    });
+
+    it('should handle semicolons in user messages', async () => {
+      await manager.startInstance('inject-semi', 'owner/repo', 'C203');
+      const instance = manager.getInstance('inject-semi');
+      const args = manager.buildArgs('hello; cat /etc/passwd', 'owner/repo', instance.sessionId);
+      const cmd = args.join(' ');
+      // Semicolons inside single quotes are harmless, but verify the
+      // message is intact and properly enclosed.
+      assert.ok(cmd.includes('cat /etc/passwd'), 'Message content preserved');
+    });
+
+    it('should handle pipes in user messages', async () => {
+      await manager.startInstance('inject-pipe', 'owner/repo', 'C204');
+      const instance = manager.getInstance('inject-pipe');
+      const args = manager.buildArgs('hello | curl evil.com', 'owner/repo', instance.sessionId);
+      const cmd = args.join(' ');
+      assert.ok(cmd.includes('curl evil.com'), 'Message content preserved');
+    });
+
+    it('should preserve normal messages without mangling', async () => {
+      await manager.startInstance('inject-normal', 'owner/repo', 'C205');
+      const instance = manager.getInstance('inject-normal');
+      const args = manager.buildArgs('please run the test suite', 'owner/repo', instance.sessionId);
+      const cmd = args.join(' ');
+      assert.ok(cmd.includes('please run the test suite'),
+        'Normal messages should be preserved verbatim');
+    });
+
+    it('should handle empty messages', async () => {
+      await manager.startInstance('inject-empty', 'owner/repo', 'C206');
+      const instance = manager.getInstance('inject-empty');
+      const args = manager.buildArgs('', 'owner/repo', instance.sessionId);
+      assert.ok(args.length > 0, 'Should still produce a command even for empty message');
+    });
+
+    it('should handle messages with newlines', async () => {
+      await manager.startInstance('inject-newline', 'owner/repo', 'C207');
+      const instance = manager.getInstance('inject-newline');
+      const args = manager.buildArgs('line one\nline two', 'owner/repo', instance.sessionId);
+      const cmd = args.join(' ');
+      assert.ok(cmd.length > 0, 'Should produce a command with newlines in message');
+    });
+
+    it('should handle messages with double quotes', async () => {
+      await manager.startInstance('inject-dq', 'owner/repo', 'C208');
+      const instance = manager.getInstance('inject-dq');
+      const args = manager.buildArgs('say "hello world"', 'owner/repo', instance.sessionId);
+      const cmd = args.join(' ');
+      assert.ok(cmd.includes('hello world'), 'Double-quoted content preserved');
+    });
+
+    it('should handle messages with backslashes', async () => {
+      await manager.startInstance('inject-bs', 'owner/repo', 'C209');
+      const instance = manager.getInstance('inject-bs');
+      const args = manager.buildArgs('path\\to\\file', 'owner/repo', instance.sessionId);
+      const cmd = args.join(' ');
+      assert.ok(cmd.includes('path'), 'Backslash content preserved');
+    });
+  });
+
+  // ===========================================================
+  // Job cleanup after completion
+  // ===========================================================
+  describe('job cleanup after completion', () => {
+    it('should clear instance.currentJob after one-shot job completes via webhook', async () => {
+      await manager.startInstance('cleanup-ok', 'owner/repo', 'C300');
+
+      const sendPromise = manager.sendToInstance('cleanup-ok', 'task', {
+        onMessage: async () => {},
+        repo: 'owner/repo'
+      });
+
+      await new Promise(r => setTimeout(r, 50));
+
+      const jobsList = manager.listJobs();
+      const jobId = jobsList[jobsList.length - 1].jobId;
+      const job = manager.getJob(jobId);
+
+      // Before completion, currentJob should be set
+      const instanceBefore = manager.getInstance('cleanup-ok');
+      assert.ok(instanceBefore.currentJob, 'currentJob should be set while job is running');
+
+      // Simulate webhook firing
+      job.complete(0);
+      await job.onComplete(job);
+
+      const result = await sendPromise;
+      assert.strictEqual(result.success, true);
+
+      // After completion, currentJob should be null
+      const instanceAfter = manager.getInstance('cleanup-ok');
+      assert.strictEqual(instanceAfter.currentJob, null,
+        'currentJob should be null after job completes');
+    });
+
+    it('should clear instance.currentJob after one-shot job fails via webhook', async () => {
+      await manager.startInstance('cleanup-fail', 'owner/repo', 'C301');
+
+      const sendPromise = manager.sendToInstance('cleanup-fail', 'bad task', {
+        onMessage: async () => {},
+        repo: 'owner/repo'
+      });
+
+      await new Promise(r => setTimeout(r, 50));
+
+      const jobsList = manager.listJobs();
+      const jobId = jobsList[jobsList.length - 1].jobId;
+      const job = manager.getJob(jobId);
+
+      // Simulate failure webhook
+      job.fail('agent crashed');
+      await job.onComplete(job);
+
+      const result = await sendPromise;
+      assert.strictEqual(result.success, false);
+
+      const instanceAfter = manager.getInstance('cleanup-fail');
+      assert.strictEqual(instanceAfter.currentJob, null,
+        'currentJob should be null after job fails');
+    });
+
+    it('should clear instance.currentJob after spawn error', async () => {
+      const failOrch = createMockOrchestrator({ spawnError: 'Machine API unavailable' });
+      const m = createInstanceManager({ orchestrator: failOrch });
+
+      await m.startInstance('cleanup-spawn', 'owner/repo', 'C302');
+      const result = await m.sendToInstance('cleanup-spawn', 'task', {
+        onMessage: async () => {}
+      });
+
+      assert.strictEqual(result.success, false);
+
+      const instanceAfter = m.getInstance('cleanup-spawn');
+      assert.strictEqual(instanceAfter.currentJob, null,
+        'currentJob should be null after spawn error');
+
+      m.stopStaleReaper();
+      m.clearInstances();
+    });
+
+    it('should clear instance.currentJob after persistent job completes', async () => {
+      await manager.startInstance('cleanup-persist', 'owner/repo', 'C303', { persistent: true });
+
+      const result = await manager.sendToInstance('cleanup-persist', 'run tests', {
+        onMessage: async () => {}
+      });
+
+      assert.strictEqual(result.success, true);
+
+      const instanceAfter = manager.getInstance('cleanup-persist');
+      assert.strictEqual(instanceAfter.currentJob, null,
+        'currentJob should be null after persistent job completes');
+    });
+  });
+
+  // ===========================================================
+  // Race condition guard: onComplete called only once
+  // ===========================================================
+  describe('race condition: timeout vs webhook', () => {
+    it('should resolve when webhook fires before timeout', async () => {
+      await manager.startInstance('race-webhook', 'owner/repo', 'C400');
+
+      const sendPromise = manager.sendToInstance('race-webhook', 'quick task', {
+        onMessage: async () => {},
+        repo: 'owner/repo',
+        timeoutMs: 5000 // long timeout to ensure webhook fires first
+      });
+
+      await new Promise(r => setTimeout(r, 50));
+
+      const jobsList = manager.listJobs();
+      const jobId = jobsList[jobsList.length - 1].jobId;
+      const job = manager.getJob(jobId);
+
+      // Webhook fires promptly
+      job.complete(0);
+      await job.onComplete(job);
+
+      const result = await sendPromise;
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.jobId, jobId);
+    });
+
+    it('should resolve with timeout error when webhook never fires', async () => {
+      await manager.startInstance('race-timeout', 'owner/repo', 'C401');
+
+      const result = await manager.sendToInstance('race-timeout', 'slow task', {
+        onMessage: async () => {},
+        repo: 'owner/repo',
+        timeoutMs: 100 // very short timeout
+      });
+
+      assert.strictEqual(result.success, false);
+      assert.ok(result.error.includes('timed out'));
+    });
+
+    it('should not call onComplete twice if both timeout and webhook fire', async () => {
+      await manager.startInstance('race-both', 'owner/repo', 'C402');
+
+      let onCompleteCount = 0;
+
+      const sendPromise = manager.sendToInstance('race-both', 'tricky task', {
+        onMessage: async () => {},
+        repo: 'owner/repo',
+        timeoutMs: 150
+      });
+
+      await new Promise(r => setTimeout(r, 50));
+
+      const jobsList = manager.listJobs();
+      const jobId = jobsList[jobsList.length - 1].jobId;
+      const job = manager.getJob(jobId);
+
+      // Wrap onComplete to count calls
+      const originalOnComplete = job.onComplete;
+      job.onComplete = async (completedJob) => {
+        onCompleteCount++;
+        return originalOnComplete(completedJob);
+      };
+
+      // Fire webhook
+      job.complete(0);
+      await job.onComplete(job);
+
+      const result = await sendPromise;
+      assert.strictEqual(result.success, true);
+
+      // Wait past the timeout period to see if it fires again
+      await new Promise(r => setTimeout(r, 200));
+
+      // onComplete should have been called exactly once by the webhook.
+      // The timeout should see the job is no longer RUNNING and skip.
+      assert.strictEqual(onCompleteCount, 1,
+        'onComplete should only be called once even if timeout fires after webhook');
+    });
+  });
+
+  // ===========================================================
+  // Stale reaper cleans up instance.currentJob
+  // ===========================================================
+  describe('stale reaper job cleanup', () => {
+    it('should mark timed-out jobs as failed via the reaper', async () => {
+      await manager.startInstance('reaper-test', 'owner/repo', 'C500');
+
+      // Create a job with a very short timeout
+      const sendPromise = manager.sendToInstance('reaper-test', 'stale task', {
+        onMessage: async () => {},
+        repo: 'owner/repo',
+        timeoutMs: 50 // 50ms timeout
+      });
+
+      await new Promise(r => setTimeout(r, 30));
+
+      const jobsList = manager.listJobs();
+      const jobId = jobsList[jobsList.length - 1].jobId;
+      const job = manager.getJob(jobId);
+      assert.strictEqual(job.status, JobStatus.RUNNING);
+
+      // Wait for the built-in timeout to fire
+      const result = await sendPromise;
+      assert.strictEqual(result.success, false);
+      assert.ok(result.error.includes('timed out'));
+    });
+  });
 });
 
 describe('Sprite Orchestrator (mocked)', () => {

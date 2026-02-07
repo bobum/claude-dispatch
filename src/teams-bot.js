@@ -1,9 +1,12 @@
 /**
  * Teams Bot with Claude Code Backend
- * 
+ *
  * This bot connects Microsoft Teams to Claude Code CLI.
  * For OpenCode support (75+ AI providers), use teams-opencode-bot.js instead.
  */
+
+process.on('unhandledRejection', (err) => { console.error('[FATAL] Unhandled rejection:', err); });
+process.on('uncaughtException', (err) => { console.error('[FATAL] Uncaught exception:', err); process.exit(1); });
 
 require('dotenv').config();
 
@@ -423,4 +426,17 @@ server.listen(PORT, () => {
   console.log('For local development with ngrok:');
   console.log(`  ngrok http ${PORT}`);
   console.log('  Then update your Teams Developer Portal bot messaging endpoint');
+});
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+  console.log('\nShutting down...');
+  server.close();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('\nShutting down...');
+  server.close();
+  process.exit(0);
 });

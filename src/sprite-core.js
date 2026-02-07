@@ -248,9 +248,14 @@ function createInstanceManager(options = {}) {
       timeoutMs
     });
 
+    // Guard against both completion and timeout resolving the race
+    let resolved = false;
+
     // Create a Promise that resolves when the webhook status fires
     const completionPromise = new Promise((resolve) => {
       job.onComplete = (completedJob) => {
+        if (resolved) return;
+        resolved = true;
         instance.currentJob = null;
         resolve({
           success: completedJob.status === JobStatus.COMPLETED,
@@ -277,7 +282,9 @@ function createInstanceManager(options = {}) {
       let timeoutTimer;
       const timeoutPromise = new Promise((resolve) => {
         timeoutTimer = setTimeout(() => {
+          if (resolved) return;
           if (job.status === JobStatus.RUNNING) {
+            resolved = true;
             job.fail('Job timed out');
             instance.currentJob = null;
             resolve({
@@ -299,14 +306,37 @@ function createInstanceManager(options = {}) {
     }
   }
 
+  /**
+   * Shell-escape a string for safe embedding in double-quoted shell arguments.
+   * Escapes all characters that could be used for shell injection:
+   *   \ → \\     (backslash)
+   *   $ → \$     (parameter/command expansion)
+   *   ` → \`     (command substitution)
+   *   " → \"     (close quote)
+   *   ! → \!     (bash history expansion)
+   *   ' → \'     (prevents payload reconstruction in command strings)
+   * @param {string} str
+   * @returns {string}
+   */
+  function shellEscape(str) {
+    return str
+      .replace(/\\/g, '\\\\')
+      .replace(/\$/g, '\\$')
+      .replace(/`/g, '\\`')
+      .replace(/"/g, '\\"')
+      .replace(/!/g, '\\!')
+      .replace(/'/g, "\\'");
+  }
+
   function buildAgentCommand(message, sessionId, type) {
-    const escapedMessage = message.replace(/'/g, "'\\''");
+    const escapedMessage = shellEscape(message);
+    const escapedSessionId = shellEscape(sessionId);
 
     if (type === 'opencode') {
-      return `test -f /etc/opencode/opencode.json && ! test -f /workspace/opencode.json && cp /etc/opencode/opencode.json /workspace/opencode.json; NO_COLOR=1 opencode run -- '${escapedMessage}' 2>&1 | perl -pe 's/\\x1b\\[[0-9;]*[a-zA-Z]//g'`;
+      return `test -f /etc/opencode/opencode.json && ! test -f /workspace/opencode.json && cp /etc/opencode/opencode.json /workspace/opencode.json; NO_COLOR=1 opencode run -- "${escapedMessage}" 2>&1 | perl -pe 's/\\x1b\\[[0-9;]*[a-zA-Z]//g'`;
     }
 
-    return `claude --dangerously-skip-permissions --output-format stream-json --session-id '${sessionId}' -p '${escapedMessage}'`;
+    return `claude --dangerously-skip-permissions --output-format stream-json --session-id "${escapedSessionId}" -p "${escapedMessage}"`;
   }
 
   function buildArgs(message, projectDir, sessionId) {
@@ -324,6 +354,14 @@ function createInstanceManager(options = {}) {
         if (job.isTimedOut()) {
           console.warn(`[Sprite] Job ${jobId} timed out, marking failed`);
           job.fail('Job timed out (stale reaper)');
+
+          // Clear instance.currentJob reference to prevent stale references
+          for (const [, instance] of instances) {
+            if (instance.currentJob && instance.currentJob.jobId === jobId) {
+              instance.currentJob = null;
+            }
+          }
+
           if (job.onComplete) {
             job.onComplete(job).catch(e => {
               console.error(`[Sprite] onComplete error during reap:`, e.message);
@@ -333,6 +371,8 @@ function createInstanceManager(options = {}) {
           if (job.machineId) {
             orchestrator.destroyMachine(job.machineId).catch(() => {});
           }
+          // Remove completed job from map to prevent memory leaks
+          jobs.delete(jobId);
         }
       }
     }, 60000);

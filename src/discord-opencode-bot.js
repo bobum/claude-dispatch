@@ -17,6 +17,9 @@
  *   node src/discord-opencode-bot.js
  */
 
+process.on('unhandledRejection', (err) => { console.error('[FATAL] Unhandled rejection:', err); });
+process.on('uncaughtException', (err) => { console.error('[FATAL] Uncaught exception:', err); process.exit(1); });
+
 require('dotenv').config();
 
 const { DiscordProvider } = require('./providers/discord-provider');

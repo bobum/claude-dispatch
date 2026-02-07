@@ -1,3 +1,6 @@
+process.on('unhandledRejection', (err) => { console.error('[FATAL] Unhandled rejection:', err); });
+process.on('uncaughtException', (err) => { console.error('[FATAL] Uncaught exception:', err); process.exit(1); });
+
 require('dotenv').config();
 
 const { App } = require('@slack/bolt');
@@ -360,3 +363,18 @@ const healthServer = http.createServer((req, res) => {
   console.log('Claude Dispatch is running');
   console.log('Waiting for Slack commands...');
 })();
+
+// Graceful shutdown
+process.on('SIGINT', async () => {
+  console.log('\nShutting down...');
+  healthServer.close();
+  await app.stop();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('\nShutting down...');
+  healthServer.close();
+  await app.stop();
+  process.exit(0);
+});
