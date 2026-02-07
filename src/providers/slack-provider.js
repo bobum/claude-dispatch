@@ -196,6 +196,40 @@ class SlackProvider extends ChatProvider {
       await this._emitCommand(ctx, 'send', command.text || '');
     });
 
+    // Slash command: run (one-shot Sprite job)
+    this.app.command(`/${prefix}-run`, async ({ command, ack, respond }) => {
+      await ack();
+
+      const ctx = this._createContext({
+        channelId: command.channel_id,
+        userId: command.user_id,
+        userName: command.user_name,
+        messageId: null,
+        raw: command
+      });
+
+      ctx.reply = async (text) => respond(text);
+
+      await this._emitCommand(ctx, 'run', command.text || '');
+    });
+
+    // Slash command: jobs (list recent Sprite jobs)
+    this.app.command(`/${prefix}-jobs`, async ({ command, ack, respond }) => {
+      await ack();
+
+      const ctx = this._createContext({
+        channelId: command.channel_id,
+        userId: command.user_id,
+        userName: command.user_name,
+        messageId: null,
+        raw: command
+      });
+
+      ctx.reply = async (text) => respond(text);
+
+      await this._emitCommand(ctx, 'jobs', '');
+    });
+
     // Also support 'od-' prefix for consistency with other platforms
     if (prefix !== 'od') {
       this._setupAlternateCommands('od');
@@ -233,6 +267,20 @@ class SlackProvider extends ChatProvider {
       await ack();
       const ctx = this._createSlackContext(command, respond);
       await this._emitCommand(ctx, 'send', command.text || '');
+    });
+
+    // run
+    this.app.command(`/${altPrefix}-run`, async ({ command, ack, respond }) => {
+      await ack();
+      const ctx = this._createSlackContext(command, respond);
+      await this._emitCommand(ctx, 'run', command.text || '');
+    });
+
+    // jobs
+    this.app.command(`/${altPrefix}-jobs`, async ({ command, ack, respond }) => {
+      await ack();
+      const ctx = this._createSlackContext(command, respond);
+      await this._emitCommand(ctx, 'jobs', '');
     });
   }
 

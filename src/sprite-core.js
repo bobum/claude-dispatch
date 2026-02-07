@@ -237,7 +237,7 @@ function createInstanceManager(options = {}) {
     const jobToken = orchestrator.generateJobToken(randomUUID());
 
     const job = new Job({
-      repo: repo || instance.projectDir,
+      repo: repo || instance.projectDir || '',
       branch,
       command: agentCommand,
       channelId: instance.channelId,
@@ -274,8 +274,9 @@ function createInstanceManager(options = {}) {
       }
 
       // Wait for webhook to fire (or timeout)
+      let timeoutTimer;
       const timeoutPromise = new Promise((resolve) => {
-        const timer = setTimeout(() => {
+        timeoutTimer = setTimeout(() => {
           if (job.status === JobStatus.RUNNING) {
             job.fail('Job timed out');
             instance.currentJob = null;
@@ -286,11 +287,11 @@ function createInstanceManager(options = {}) {
             });
           }
         }, job.timeoutMs);
-        // Don't keep the process alive just for this timer
-        if (timer.unref) timer.unref();
       });
 
-      return await Promise.race([completionPromise, timeoutPromise]);
+      const result = await Promise.race([completionPromise, timeoutPromise]);
+      clearTimeout(timeoutTimer);
+      return result;
     } catch (error) {
       job.fail(error.message);
       instance.currentJob = null;
@@ -302,7 +303,7 @@ function createInstanceManager(options = {}) {
     const escapedMessage = message.replace(/'/g, "'\\''");
 
     if (type === 'opencode') {
-      return `opencode run --format json --session '${sessionId}' -- '${escapedMessage}'`;
+      return `test -f /etc/opencode/opencode.json && ! test -f /workspace/opencode.json && cp /etc/opencode/opencode.json /workspace/opencode.json; NO_COLOR=1 opencode run -- '${escapedMessage}' 2>&1 | perl -pe 's/\\x1b\\[[0-9;]*[a-zA-Z]//g'`;
     }
 
     return `claude --dangerously-skip-permissions --output-format stream-json --session-id '${sessionId}' -p '${escapedMessage}'`;
