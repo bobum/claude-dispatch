@@ -274,8 +274,9 @@ function createInstanceManager(options = {}) {
       }
 
       // Wait for webhook to fire (or timeout)
+      let timeoutTimer;
       const timeoutPromise = new Promise((resolve) => {
-        const timer = setTimeout(() => {
+        timeoutTimer = setTimeout(() => {
           if (job.status === JobStatus.RUNNING) {
             job.fail('Job timed out');
             instance.currentJob = null;
@@ -286,11 +287,11 @@ function createInstanceManager(options = {}) {
             });
           }
         }, job.timeoutMs);
-        // Don't keep the process alive just for this timer
-        if (timer.unref) timer.unref();
       });
 
-      return await Promise.race([completionPromise, timeoutPromise]);
+      const result = await Promise.race([completionPromise, timeoutPromise]);
+      clearTimeout(timeoutTimer);
+      return result;
     } catch (error) {
       job.fail(error.message);
       instance.currentJob = null;
