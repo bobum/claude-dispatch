@@ -286,7 +286,7 @@ function createBotEngine(options) {
 
     // Create a temporary instance for this job
     const instanceId = `run-${Date.now()}`;
-    const projectDir = parsed.repo || 'default';
+    const projectDir = parsed.repo || '';
 
     const startResult = await aiBackend.startInstance(instanceId, projectDir, ctx.channelId);
     if (!startResult.success) {
