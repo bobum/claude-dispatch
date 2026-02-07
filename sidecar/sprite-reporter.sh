@@ -88,7 +88,7 @@ post_status "running" 0
 # Clone repository (if REPO is set)
 # ---------------------------------------------------------------------------
 
-WORKDIR="/workspace"
+WORKDIR="${WORKDIR:-/workspace}"
 mkdir -p "$WORKDIR"
 
 if [ -n "${REPO:-}" ]; then

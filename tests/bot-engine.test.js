@@ -306,6 +306,161 @@ describe('Bot Engine - Command Routing', () => {
 });
 
 // ============================================
+// Image Alias Resolution Tests
+// ============================================
+
+describe('Bot Engine - Image Alias Resolution', () => {
+  it('should resolve image alias from SPRITE_IMAGES env var', async () => {
+    const originalEnv = process.env.SPRITE_IMAGES;
+    process.env.SPRITE_IMAGES = JSON.stringify({
+      web: 'ghcr.io/myorg/web-sprite:latest',
+      api: 'ghcr.io/myorg/api-sprite:latest'
+    });
+
+    let capturedImage = null;
+    const chatProvider = createMockChatProvider();
+    const aiBackend = createMockAIBackend();
+
+    // Capture the image passed to sendToInstance
+    const originalSend = aiBackend.sendToInstance.bind(aiBackend);
+    aiBackend.sendToInstance = async (instanceId, message, opts) => {
+      capturedImage = opts.image;
+      return originalSend(instanceId, message, opts);
+    };
+
+    const bot = createBotEngine({
+      chatProvider,
+      aiBackend,
+      aiName: 'Test',
+      showThinking: false,
+      streamResponses: false
+    });
+
+    await aiBackend.startInstance('test', '/project', 'C123');
+    const ctx = { channelId: 'C123', reply: async () => {} };
+    await chatProvider.fireCommand(ctx, 'run', '--image web "do stuff"');
+
+    assert.strictEqual(capturedImage, 'ghcr.io/myorg/web-sprite:latest',
+      'Image alias should resolve to full URL');
+
+    // Cleanup
+    if (originalEnv === undefined) {
+      delete process.env.SPRITE_IMAGES;
+    } else {
+      process.env.SPRITE_IMAGES = originalEnv;
+    }
+  });
+
+  it('should pass through full image URLs unchanged', async () => {
+    const originalEnv = process.env.SPRITE_IMAGES;
+    process.env.SPRITE_IMAGES = JSON.stringify({ web: 'ghcr.io/myorg/web-sprite:latest' });
+
+    let capturedImage = null;
+    const chatProvider = createMockChatProvider();
+    const aiBackend = createMockAIBackend();
+
+    const originalSend = aiBackend.sendToInstance.bind(aiBackend);
+    aiBackend.sendToInstance = async (instanceId, message, opts) => {
+      capturedImage = opts.image;
+      return originalSend(instanceId, message, opts);
+    };
+
+    const bot = createBotEngine({
+      chatProvider,
+      aiBackend,
+      aiName: 'Test',
+      showThinking: false,
+      streamResponses: false
+    });
+
+    await aiBackend.startInstance('test', '/project', 'C123');
+    const ctx = { channelId: 'C123', reply: async () => {} };
+    await chatProvider.fireCommand(ctx, 'run', '--image ghcr.io/other/image:v2 "do stuff"');
+
+    assert.strictEqual(capturedImage, 'ghcr.io/other/image:v2',
+      'Unrecognized image names should pass through as-is');
+
+    if (originalEnv === undefined) {
+      delete process.env.SPRITE_IMAGES;
+    } else {
+      process.env.SPRITE_IMAGES = originalEnv;
+    }
+  });
+
+  it('should work when SPRITE_IMAGES is not set', async () => {
+    const originalEnv = process.env.SPRITE_IMAGES;
+    delete process.env.SPRITE_IMAGES;
+
+    let capturedImage = null;
+    const chatProvider = createMockChatProvider();
+    const aiBackend = createMockAIBackend();
+
+    const originalSend = aiBackend.sendToInstance.bind(aiBackend);
+    aiBackend.sendToInstance = async (instanceId, message, opts) => {
+      capturedImage = opts.image;
+      return originalSend(instanceId, message, opts);
+    };
+
+    const bot = createBotEngine({
+      chatProvider,
+      aiBackend,
+      aiName: 'Test',
+      showThinking: false,
+      streamResponses: false
+    });
+
+    await aiBackend.startInstance('test', '/project', 'C123');
+    const ctx = { channelId: 'C123', reply: async () => {} };
+    await chatProvider.fireCommand(ctx, 'run', '--image my-image:v1 "do stuff"');
+
+    assert.strictEqual(capturedImage, 'my-image:v1',
+      'Image should pass through when SPRITE_IMAGES is not set');
+
+    if (originalEnv === undefined) {
+      delete process.env.SPRITE_IMAGES;
+    } else {
+      process.env.SPRITE_IMAGES = originalEnv;
+    }
+  });
+
+  it('should handle malformed SPRITE_IMAGES JSON gracefully', async () => {
+    const originalEnv = process.env.SPRITE_IMAGES;
+    process.env.SPRITE_IMAGES = 'not valid json';
+
+    let capturedImage = null;
+    const chatProvider = createMockChatProvider();
+    const aiBackend = createMockAIBackend();
+
+    const originalSend = aiBackend.sendToInstance.bind(aiBackend);
+    aiBackend.sendToInstance = async (instanceId, message, opts) => {
+      capturedImage = opts.image;
+      return originalSend(instanceId, message, opts);
+    };
+
+    const bot = createBotEngine({
+      chatProvider,
+      aiBackend,
+      aiName: 'Test',
+      showThinking: false,
+      streamResponses: false
+    });
+
+    await aiBackend.startInstance('test', '/project', 'C123');
+    const ctx = { channelId: 'C123', reply: async () => {} };
+    await chatProvider.fireCommand(ctx, 'run', '--image web "do stuff"');
+
+    assert.strictEqual(capturedImage, 'web',
+      'Should fall back to raw image name on invalid JSON');
+
+    if (originalEnv === undefined) {
+      delete process.env.SPRITE_IMAGES;
+    } else {
+      process.env.SPRITE_IMAGES = originalEnv;
+    }
+  });
+});
+
+// ============================================
 // Unhandled Rejection Handler Verification
 // ============================================
 

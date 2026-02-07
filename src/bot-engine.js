@@ -273,6 +273,7 @@ function createBotEngine(options) {
 
     // Parse options and task from args
     const parsed = parseRunArgs(args);
+    parsed.image = resolveImageAlias(parsed.image);
 
     if (!parsed.task) {
       await ctx.reply(
@@ -378,6 +379,25 @@ function createBotEngine(options) {
       } else {
         await ctx.reply(`**Job Failed** (${result.jobId || 'N/A'})\nError: ${result.error}`);
       }
+    }
+  }
+
+  /**
+   * Resolve image aliases from SPRITE_IMAGES env var.
+   * If SPRITE_IMAGES is set (JSON map), look up the alias; if found, return
+   * the full URL. If not found (or env not set), return the original value.
+   * @param {string|null} image
+   * @returns {string|null}
+   */
+  function resolveImageAlias(image) {
+    if (!image) return image;
+    const spriteImages = process.env.SPRITE_IMAGES;
+    if (!spriteImages) return image;
+    try {
+      const aliases = JSON.parse(spriteImages);
+      return aliases[image] ?? image;
+    } catch {
+      return image;
     }
   }
 
