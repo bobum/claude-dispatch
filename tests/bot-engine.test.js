@@ -315,6 +315,7 @@ describe('Unhandled rejection handlers in entry points', () => {
   // This is a static/grep-style check on the source code.
 
   const entryPoints = [
+    { name: 'bot.js', path: path.join(__dirname, '../src/bot.js') },
     { name: 'sprite-bot.js', path: path.join(__dirname, '../src/sprite-bot.js') },
     { name: 'discord-bot.js', path: path.join(__dirname, '../src/discord-bot.js') },
     { name: 'discord-opencode-bot.js', path: path.join(__dirname, '../src/discord-opencode-bot.js') },

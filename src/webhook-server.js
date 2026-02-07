@@ -64,7 +64,9 @@ function createWebhookServer({ jobs, port = 8080 }) {
           // Resume and discard remaining data so the connection stays open
           // long enough for us to send the 413 response.
           req.resume();
-          reject(new Error('Body too large'));
+          const err = new Error('Body too large');
+          err.code = 'BODY_TOO_LARGE';
+          reject(err);
           return;
         }
         data += chunk;
@@ -115,7 +117,7 @@ function createWebhookServer({ jobs, port = 8080 }) {
     try {
       body = await parseBody(req);
     } catch (e) {
-      if (e.message === 'Body too large') {
+      if (e.code === 'BODY_TOO_LARGE') {
         return respond(res, 413, { error: 'Payload too large' });
       }
       return respond(res, 400, { error: 'Invalid JSON' });
@@ -154,7 +156,7 @@ function createWebhookServer({ jobs, port = 8080 }) {
     try {
       body = await parseBody(req);
     } catch (e) {
-      if (e.message === 'Body too large') {
+      if (e.code === 'BODY_TOO_LARGE') {
         return respond(res, 413, { error: 'Payload too large' });
       }
       return respond(res, 400, { error: 'Invalid JSON' });
@@ -205,7 +207,7 @@ function createWebhookServer({ jobs, port = 8080 }) {
     try {
       body = await parseBody(req);
     } catch (e) {
-      if (e.message === 'Body too large') {
+      if (e.code === 'BODY_TOO_LARGE') {
         return respond(res, 413, { error: 'Payload too large' });
       }
       return respond(res, 400, { error: 'Invalid JSON' });

@@ -281,13 +281,15 @@ describe('Sprite Instance Manager', () => {
   });
 
   describe('buildArgs', () => {
-    it('should build claude command by default', async () => {
+    it('should return an args array for claude by default', async () => {
       await manager.startInstance('test', 'owner/repo', 'C123');
       const instance = manager.getInstance('test');
       const args = manager.buildArgs('hello world', 'owner/repo', instance.sessionId);
+      assert.ok(Array.isArray(args), 'buildArgs should return an array');
       assert.ok(args.length > 0);
-      // Should contain 'claude' since default agent is claude
-      assert.ok(args.some(a => a.includes('claude') || a.includes('opencode')));
+      // Default agent is claude — args should include its flags
+      assert.ok(args.includes('--dangerously-skip-permissions'),
+        'Claude args should contain --dangerously-skip-permissions');
     });
   });
 

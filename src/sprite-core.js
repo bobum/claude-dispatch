@@ -340,7 +340,17 @@ function createInstanceManager(options = {}) {
   }
 
   function buildArgs(message, projectDir, sessionId) {
-    return buildAgentCommand(message, sessionId, agentType).split(' ');
+    const escaped = shellEscape(message);
+    const escapedSession = shellEscape(sessionId);
+    if (agentType === 'opencode') {
+      return ['run', '--format', 'json', '--session', escapedSession, '--', escaped];
+    }
+    return [
+      '--dangerously-skip-permissions',
+      '--output-format', 'stream-json',
+      '--session-id', escapedSession,
+      '-p', escaped
+    ];
   }
 
   /**

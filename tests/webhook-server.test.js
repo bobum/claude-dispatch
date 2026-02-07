@@ -325,11 +325,7 @@ describe('Webhook Server', () => {
       const oversizedBody = JSON.stringify({ jobId: 'fake', text: oversizedText });
 
       const res = await postRaw(port, '/webhooks/logs', oversizedBody, 'tok');
-      // Should get 413 Payload Too Large (or 400 if the server closes the connection)
-      assert.ok(
-        res.status === 413 || res.status === 400,
-        `Expected 413 or 400 for oversized body, got ${res.status}`
-      );
+      assert.strictEqual(res.status, 413, `Expected 413 Payload Too Large for oversized body, got ${res.status}`);
     });
 
     it('should accept normal-sized bodies', async () => {
@@ -358,7 +354,7 @@ describe('Webhook Server', () => {
   // Job cleanup: jobs removed from Map after terminal status
   // ===========================================================
   describe('job cleanup after webhook status', () => {
-    it('should fire onComplete on completed status and job remains accessible', async () => {
+    it('should fire onComplete on completed status and remove job from map', async () => {
       let completedJobId = null;
       const job = new Job({
         repo: 'r', command: 'c', channelId: 'ch', jobToken: 'tok',
@@ -373,9 +369,10 @@ describe('Webhook Server', () => {
 
       assert.strictEqual(completedJobId, job.jobId);
       assert.strictEqual(job.status, JobStatus.COMPLETED);
+      assert.strictEqual(jobs.has(job.jobId), false, 'Completed job should be removed from map');
     });
 
-    it('should fire onComplete on failed status and job remains accessible', async () => {
+    it('should fire onComplete on failed status and remove job from map', async () => {
       let completedJobId = null;
       const job = new Job({
         repo: 'r', command: 'c', channelId: 'ch', jobToken: 'tok',
@@ -390,6 +387,7 @@ describe('Webhook Server', () => {
 
       assert.strictEqual(completedJobId, job.jobId);
       assert.strictEqual(job.status, JobStatus.FAILED);
+      assert.strictEqual(jobs.has(job.jobId), false, 'Failed job should be removed from map');
     });
 
     it('should not fire onComplete for running status update', async () => {
