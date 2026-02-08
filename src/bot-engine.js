@@ -22,7 +22,7 @@ function generateName() {
  * Respects double and single quotes — content inside quotes
  * is kept as a single token with quotes stripped.
  * @param {string} input
- * @returns {string[]}
+ * @returns {string[] | {error: string}} Array of tokens, or object with error on parse failure
  */
 function tokenize(input) {
   const tokens = [];
@@ -470,6 +470,8 @@ function createBotEngine(options) {
         onMessage,
         image: parsed.image
       });
+    } catch (err) {
+      result = { success: false, error: err.message || String(err) };
     } finally {
       // Always clean up batcher and temp instance, even on error
       await batcher.flush();
