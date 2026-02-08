@@ -218,6 +218,12 @@ describe('Bot Engine — Unified Commands', () => {
       assert.ok(call.instanceId.startsWith('agent-'));
       assert.strictEqual(call.projectDir, 'projects/api');
     });
+
+    it('should error when --image has no value', async () => {
+      await chatProvider.simulateCommand('start', '--image');
+      assert.ok(chatProvider.sent.some(m => m.text && m.text.includes('Missing value for --image')));
+      assert.strictEqual(aiBackend.startCalls.length, 0);
+    });
   });
 
   describe('handleRun', () => {
@@ -252,6 +258,19 @@ describe('Bot Engine — Unified Commands', () => {
       assert.strictEqual(aiBackend.startCalls.length, 1);
       // The task should be the full quoted string, --image NOT extracted as a flag
       // (sendToInstance receives the task text)
+    });
+
+    it('should error when --image has no value', async () => {
+      await chatProvider.simulateCommand('run', '--image');
+      assert.ok(chatProvider.sent.some(m => m.text && m.text.includes('Missing value for --image')));
+      assert.strictEqual(aiBackend.startCalls.length, 0);
+    });
+
+    it('should pass image to startInstance opts', async () => {
+      await chatProvider.simulateCommand('run', '--image custom:v1 "fix tests"');
+      assert.strictEqual(aiBackend.startCalls.length, 1);
+      const call = aiBackend.startCalls[0];
+      assert.deepStrictEqual(call.opts, { image: 'custom:v1' });
     });
   });
 

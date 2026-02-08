@@ -10,7 +10,7 @@ const { randomBytes } = require('crypto');
 
 /**
  * Generate a short unique name for auto-named agents.
- * @returns {string} e.g. "agent-7k3f"
+ * @returns {string} e.g. "agent-7a3f"
  */
 function generateName() {
   return 'agent-' + randomBytes(2).toString('hex');
@@ -178,6 +178,15 @@ function createBotEngine(options) {
    */
   async function handleStart(ctx, args) {
     const parsed = parseStartArgs(args);
+
+    if (parsed.error) {
+      await ctx.reply(
+        `${parsed.error}\n\n` +
+        `Usage: \`${commandPrefix}-start [name] [--image <alias>] [path]\``
+      );
+      return;
+    }
+
     const instanceId = parsed.name || generateName();
     const projectDir = parsed.path || os.homedir();
     const opts = {};
@@ -227,15 +236,20 @@ function createBotEngine(options) {
    * @returns {Object} Parsed { name, image, path }
    */
   function parseStartArgs(args) {
-    const result = { name: null, image: null, path: null };
+    const result = { name: null, image: null, path: null, error: null };
     const tokens = tokenize(args);
     if (tokens.length === 0) return result;
 
     // Extract --image <value> from token list
     const imageIdx = tokens.indexOf('--image');
-    if (imageIdx !== -1 && imageIdx + 1 < tokens.length) {
-      result.image = tokens[imageIdx + 1];
-      tokens.splice(imageIdx, 2);
+    if (imageIdx !== -1) {
+      if (imageIdx + 1 < tokens.length) {
+        result.image = tokens[imageIdx + 1];
+        tokens.splice(imageIdx, 2);
+      } else {
+        result.error = 'Missing value for --image';
+        return result;
+      }
     }
 
     if (tokens.length === 0) return result;
@@ -378,15 +392,20 @@ function createBotEngine(options) {
 
   /**
    * Handle the 'run' command (one-shot fire-and-forget)
-   * Usage: /od-run [--image <image>] <task>
+   * Usage: /od-run [--image <alias>] <task>
    */
   async function handleRun(ctx, args) {
     // Parse options and task from args
     const parsed = parseRunArgs(args);
 
+    if (parsed.error) {
+      await ctx.reply(parsed.error);
+      return;
+    }
+
     if (!parsed.task) {
       await ctx.reply(
-        `Usage: \`${commandPrefix}-run [--image <image>] <task>\`\n\n` +
+        `Usage: \`${commandPrefix}-run [--image <alias>] <task>\`\n\n` +
         `**Examples:**\n` +
         `\`${commandPrefix}-run "run the tests"\`\n` +
         `\`${commandPrefix}-run --image my-agent:v1 "lint the code"\``
@@ -398,7 +417,10 @@ function createBotEngine(options) {
     const instanceId = generateName();
     const projectDir = os.homedir();
 
-    const startResult = await aiBackend.startInstance(instanceId, projectDir, ctx.channelId);
+    const startOpts = {};
+    if (parsed.image) startOpts.image = parsed.image;
+
+    const startResult = await aiBackend.startInstance(instanceId, projectDir, ctx.channelId, startOpts);
     if (!startResult.success) {
       await ctx.reply(`Failed to start job: ${startResult.error}`);
       return;
@@ -492,15 +514,20 @@ function createBotEngine(options) {
    * @returns {Object} Parsed options { image, task }
    */
   function parseRunArgs(args) {
-    const result = { image: null, task: null };
+    const result = { image: null, task: null, error: null };
     const tokens = tokenize(args);
     if (tokens.length === 0) return result;
 
     // Extract --image <value> from token list
     const imageIdx = tokens.indexOf('--image');
-    if (imageIdx !== -1 && imageIdx + 1 < tokens.length) {
-      result.image = tokens[imageIdx + 1];
-      tokens.splice(imageIdx, 2);
+    if (imageIdx !== -1) {
+      if (imageIdx + 1 < tokens.length) {
+        result.image = tokens[imageIdx + 1];
+        tokens.splice(imageIdx, 2);
+      } else {
+        result.error = 'Missing value for --image';
+        return result;
+      }
     }
 
     // Remaining tokens form the task
