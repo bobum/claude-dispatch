@@ -319,24 +319,23 @@ function createBotEngine(options) {
     // Show typing indicator
     await chatProvider.sendTypingIndicator(ctx.channelId);
 
-    // Use message batcher for rate-limit protection
-    const batcher = createMessageBatcher(ctx.channelId);
-    const onMessage = async (text) => {
-      batcher.push(text);
-    };
-
-    // Execute the job
+    // Execute the job — don't stream intermediate output to avoid
+    // flooding Slack with tool calls; send final response on completion
     const result = await aiBackend.sendToInstance(instanceId, parsed.task, {
-      onMessage,
       repo: parsed.repo,
       branch: parsed.branch,
       image: parsed.image
     });
 
-    // Flush remaining output and clean up
-    await batcher.flush();
-    batcher.destroy();
     aiBackend.stopInstance(instanceId);
+
+    // Send accumulated output
+    if (result.responses && result.responses.length > 0) {
+      const output = result.responses.join('\n').trim();
+      if (output) {
+        await chatProvider.sendLongMessage(ctx.channelId, output);
+      }
+    }
 
     // Send final status
     if (result.success) {
