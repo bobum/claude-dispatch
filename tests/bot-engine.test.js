@@ -190,6 +190,34 @@ describe('Bot Engine — Unified Commands', () => {
       assert.ok(call.instanceId.startsWith('agent-'));
       assert.strictEqual(call.projectDir, '~/project');
     });
+
+    it('should handle relative path . as path not name', async () => {
+      await chatProvider.simulateCommand('start', '.');
+      const call = aiBackend.startCalls[0];
+      assert.ok(call.instanceId.startsWith('agent-'));
+      assert.strictEqual(call.projectDir, '.');
+    });
+
+    it('should handle relative path ./repo as path not name', async () => {
+      await chatProvider.simulateCommand('start', './repo');
+      const call = aiBackend.startCalls[0];
+      assert.ok(call.instanceId.startsWith('agent-'));
+      assert.strictEqual(call.projectDir, './repo');
+    });
+
+    it('should handle relative path ../repo as path not name', async () => {
+      await chatProvider.simulateCommand('start', '../repo');
+      const call = aiBackend.startCalls[0];
+      assert.ok(call.instanceId.startsWith('agent-'));
+      assert.strictEqual(call.projectDir, '../repo');
+    });
+
+    it('should handle path with slashes (projects/api) as path not name', async () => {
+      await chatProvider.simulateCommand('start', 'projects/api');
+      const call = aiBackend.startCalls[0];
+      assert.ok(call.instanceId.startsWith('agent-'));
+      assert.strictEqual(call.projectDir, 'projects/api');
+    });
   });
 
   describe('handleRun', () => {
@@ -218,6 +246,13 @@ describe('Bot Engine — Unified Commands', () => {
       await chatProvider.simulateCommand('run', 'do something');
       assert.strictEqual(aiBackend.startCalls.length, 1);
     });
+
+    it('should not extract --image from inside quoted task', async () => {
+      await chatProvider.simulateCommand('run', '"document --image foo behavior"');
+      assert.strictEqual(aiBackend.startCalls.length, 1);
+      // The task should be the full quoted string, --image NOT extracted as a flag
+      // (sendToInstance receives the task text)
+    });
   });
 
   describe('handleStop', () => {
@@ -244,6 +279,55 @@ describe('Bot Engine — Unified Commands', () => {
     it('should report when --all has nothing to stop', async () => {
       await chatProvider.simulateCommand('stop', '--all');
       assert.ok(chatProvider.sent.some(m => m.text && m.text.includes('No instances running')));
+    });
+  });
+
+  describe('tokenize', () => {
+    it('should split simple words', () => {
+      assert.deepStrictEqual(_test.tokenize('a b c'), ['a', 'b', 'c']);
+    });
+
+    it('should keep quoted strings as single tokens', () => {
+      assert.deepStrictEqual(_test.tokenize('--image foo "run the tests"'), ['--image', 'foo', 'run the tests']);
+    });
+
+    it('should handle single quotes', () => {
+      assert.deepStrictEqual(_test.tokenize("'hello world'"), ['hello world']);
+    });
+
+    it('should not extract flags inside quotes', () => {
+      const tokens = _test.tokenize('"document --image foo behavior"');
+      assert.deepStrictEqual(tokens, ['document --image foo behavior']);
+    });
+
+    it('should handle empty input', () => {
+      assert.deepStrictEqual(_test.tokenize(''), []);
+    });
+  });
+
+  describe('looksLikePath', () => {
+    it('should detect absolute paths', () => {
+      assert.strictEqual(_test.looksLikePath('/home/user'), true);
+    });
+
+    it('should detect ~ paths', () => {
+      assert.strictEqual(_test.looksLikePath('~/project'), true);
+    });
+
+    it('should detect relative dot paths', () => {
+      assert.strictEqual(_test.looksLikePath('.'), true);
+      assert.strictEqual(_test.looksLikePath('..'), true);
+      assert.strictEqual(_test.looksLikePath('./repo'), true);
+      assert.strictEqual(_test.looksLikePath('../repo'), true);
+    });
+
+    it('should detect paths with slashes', () => {
+      assert.strictEqual(_test.looksLikePath('projects/api'), true);
+    });
+
+    it('should not detect plain names as paths', () => {
+      assert.strictEqual(_test.looksLikePath('mybot'), false);
+      assert.strictEqual(_test.looksLikePath('agent-7k3f'), false);
     });
   });
 

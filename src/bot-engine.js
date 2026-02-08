@@ -9,6 +9,65 @@ const os = require('os');
 const { randomBytes } = require('crypto');
 
 /**
+ * Generate a short unique name for auto-named agents.
+ * @returns {string} e.g. "agent-7k3f"
+ */
+function generateName() {
+  return 'agent-' + randomBytes(2).toString('hex');
+}
+
+/**
+ * Tokenize an argument string with quote awareness.
+ * Respects double and single quotes — content inside quotes
+ * is kept as a single token with quotes stripped.
+ * @param {string} input
+ * @returns {string[]}
+ */
+function tokenize(input) {
+  const tokens = [];
+  let current = '';
+  let inQuote = null;
+
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+
+    if (inQuote) {
+      if (ch === inQuote) {
+        inQuote = null;
+      } else {
+        current += ch;
+      }
+    } else if (ch === '"' || ch === "'") {
+      inQuote = ch;
+    } else if (/\s/.test(ch)) {
+      if (current) {
+        tokens.push(current);
+        current = '';
+      }
+    } else {
+      current += ch;
+    }
+  }
+  if (current) tokens.push(current);
+  return tokens;
+}
+
+/**
+ * Check if a string looks like a filesystem path.
+ * @param {string} token
+ * @returns {boolean}
+ */
+function looksLikePath(token) {
+  return token.startsWith('/') ||
+    token.startsWith('~') ||
+    token.startsWith('./') ||
+    token.startsWith('../') ||
+    token === '.' ||
+    token === '..' ||
+    token.includes('/');
+}
+
+/**
  * @typedef {Object} BotEngineOptions
  * @property {import('./providers/chat-provider').ChatProvider} chatProvider - Chat platform provider
  * @property {Object} aiBackend - AI instance manager (from claude-core or opencode-core)
@@ -114,14 +173,6 @@ function createBotEngine(options) {
   // ============================================
 
   /**
-   * Generate a short unique name for auto-named agents.
-   * @returns {string} e.g. "agent-7k3f"
-   */
-  function generateName() {
-    return 'agent-' + randomBytes(2).toString('hex');
-  }
-
-  /**
    * Handle the 'start' command
    * Usage: /od-start [name] [--image alias] [path]
    */
@@ -171,31 +222,26 @@ function createBotEngine(options) {
   }
 
   /**
-   * Parse /od-start arguments
+   * Parse /od-start arguments using quote-aware tokenizer.
    * @param {string} args - Raw argument string
    * @returns {Object} Parsed { name, image, path }
    */
   function parseStartArgs(args) {
     const result = { name: null, image: null, path: null };
-    let remaining = args.trim();
-    if (!remaining) return result;
+    const tokens = tokenize(args);
+    if (tokens.length === 0) return result;
 
-    // Extract --image value
-    const imageMatch = remaining.match(/--image\s+(\S+)/);
-    if (imageMatch) {
-      result.image = imageMatch[1];
-      remaining = remaining.replace(/--image\s+\S+/, '').trim();
+    // Extract --image <value> from token list
+    const imageIdx = tokens.indexOf('--image');
+    if (imageIdx !== -1 && imageIdx + 1 < tokens.length) {
+      result.image = tokens[imageIdx + 1];
+      tokens.splice(imageIdx, 2);
     }
 
-    if (!remaining) return result;
-
-    // Remaining tokens: [name] [path]
-    // Path starts with / or ~ or is a known home dir pattern
-    const tokens = remaining.split(/\s+/);
     if (tokens.length === 0) return result;
 
     // If first token looks like a path, it's the path (no name given)
-    if (tokens[0].startsWith('/') || tokens[0].startsWith('~')) {
+    if (looksLikePath(tokens[0])) {
       result.path = tokens.join(' ');
     } else {
       result.name = tokens[0];
@@ -440,29 +486,26 @@ function createBotEngine(options) {
   }
 
   /**
-   * Parse /od-run arguments
+   * Parse /od-run arguments using quote-aware tokenizer.
+   * Flags (--image) are only recognized outside quoted strings.
    * @param {string} args - Raw argument string
    * @returns {Object} Parsed options { image, task }
    */
   function parseRunArgs(args) {
     const result = { image: null, task: null };
-    let remaining = args.trim();
+    const tokens = tokenize(args);
+    if (tokens.length === 0) return result;
 
-    // Extract --image value
-    const imageMatch = remaining.match(/--image\s+(\S+)/);
-    if (imageMatch) {
-      result.image = imageMatch[1];
-      remaining = remaining.replace(/--image\s+\S+/, '').trim();
+    // Extract --image <value> from token list
+    const imageIdx = tokens.indexOf('--image');
+    if (imageIdx !== -1 && imageIdx + 1 < tokens.length) {
+      result.image = tokens[imageIdx + 1];
+      tokens.splice(imageIdx, 2);
     }
 
-    // Task can be quoted or unquoted
-    if (remaining.startsWith('"') && remaining.endsWith('"')) {
-      result.task = remaining.slice(1, -1);
-    } else if (remaining.startsWith("'") && remaining.endsWith("'")) {
-      result.task = remaining.slice(1, -1);
-    } else {
-      result.task = remaining || null;
-    }
+    // Remaining tokens form the task
+    const task = tokens.join(' ');
+    result.task = task || null;
 
     return result;
   }
@@ -738,4 +781,4 @@ function createBotEngine(options) {
   };
 }
 
-module.exports = { createBotEngine, _test: { generateName: () => 'agent-' + randomBytes(2).toString('hex') } };
+module.exports = { createBotEngine, _test: { generateName, tokenize, looksLikePath } };
