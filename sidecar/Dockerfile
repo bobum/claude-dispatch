@@ -12,6 +12,7 @@
 # Contents:
 #   /sidecar/sprite-reporter    — Bash entry point (clone, run, report)
 #   /sidecar/output-relay.js    — Node.js buffered output relay
+#   /sidecar/formatters/        — Optional output formatters (set OUTPUT_FORMATTER)
 # =============================================================================
 
 FROM node:22-slim
@@ -26,6 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy sidecar scripts to a well-known path
 COPY sprite-reporter.sh /sidecar/sprite-reporter
 COPY output-relay.js /sidecar/output-relay.js
+COPY formatters/ /sidecar/formatters/
 
 RUN chmod +x /sidecar/sprite-reporter
 
