@@ -136,19 +136,45 @@ fi
 
 echo "[sprite-reporter] Executing: ${COMMAND}"
 
-# Pipe agent stdout through output-relay.js for webhook delivery
-# Also tee to stdout so Fly.io built-in logs capture everything
+# Optional output formatter — set OUTPUT_FORMATTER to enable.
+# Formatters transform raw agent CLI output into clean conversational text
+# before it reaches the webhook relay. Included formatters:
+#   opencode  — extracts response from OpenCode's --format json output
+# Custom formatters: place a script at /usr/local/bin/formatters/<name>.js
+FORMATTER_PATH=""
+if [ -n "${OUTPUT_FORMATTER:-}" ]; then
+  FORMATTER_PATH="/usr/local/bin/formatters/${OUTPUT_FORMATTER}.js"
+  if [ -f "$FORMATTER_PATH" ]; then
+    echo "[sprite-reporter] Using output formatter: ${OUTPUT_FORMATTER}"
+  else
+    echo "[sprite-reporter] WARNING: Formatter '${OUTPUT_FORMATTER}' not found at ${FORMATTER_PATH}"
+    FORMATTER_PATH=""
+  fi
+fi
+
+# Pipe agent stdout through optional formatter, then output-relay.js for
+# webhook delivery. Also tee to stdout so Fly.io built-in logs capture raw output.
 EXIT_CODE=0
 if command -v node >/dev/null 2>&1 && [ -f /usr/local/bin/output-relay.js ]; then
   # Use Node.js relay for buffered webhook delivery
-  eval "$COMMAND" 2>&1 | tee /dev/stderr | node /usr/local/bin/output-relay.js || EXIT_CODE=$?
+  if [ -n "$FORMATTER_PATH" ]; then
+    eval "$COMMAND" 2>&1 | tee /dev/stderr | node "$FORMATTER_PATH" | node /usr/local/bin/output-relay.js || EXIT_CODE=$?
+  else
+    eval "$COMMAND" 2>&1 | tee /dev/stderr | node /usr/local/bin/output-relay.js || EXIT_CODE=$?
+  fi
 else
   # Fallback: line-by-line curl (slower, no buffering)
-  eval "$COMMAND" 2>&1 | while IFS= read -r line; do
-    echo "$line"
-    post_log "$line"
-  done || EXIT_CODE=$?
-  # Capture exit code from the command, not the while loop
+  if [ -n "$FORMATTER_PATH" ]; then
+    eval "$COMMAND" 2>&1 | node "$FORMATTER_PATH" | while IFS= read -r line; do
+      echo "$line"
+      post_log "$line"
+    done || EXIT_CODE=$?
+  else
+    eval "$COMMAND" 2>&1 | while IFS= read -r line; do
+      echo "$line"
+      post_log "$line"
+    done || EXIT_CODE=$?
+  fi
   EXIT_CODE=${PIPESTATUS[0]}
 fi
 
