@@ -14,7 +14,7 @@
 
 *Run agents locally or spin up isolated cloud VMs on [Fly.io](https://fly.io). Control everything from chat.*
 
-[Quick Start](#-quick-start) · [Deployment Modes](#-deployment-modes) · [Sprites](#sprite-architecture-cloud-mode) · [Features](#-features) · [Setup](#-setup-choose-your-path) · [Commands](#-commands) · [Architecture](#-architecture)
+[Quick Start](#-quick-start) · [Deployment Modes](#-deployment-modes) · [Sprites](#sprite-architecture-cloud-mode) · [Features](#-features) · [Output Formatters](#-output-formatters) · [Setup](#-setup-choose-your-path) · [Commands](#-commands) · [Architecture](#-architecture)
 
 </div>
 
@@ -67,6 +67,16 @@ SPRITE MODE:
   Options: --repo <url>, --branch <name>, --image <docker-image>
 - /od-start <name> --repo <url> --persistent → Persistent VM session
 - /od-jobs                 → List recent Sprite jobs
+
+OUTPUT FORMATTERS (Sprite mode only):
+- Formatters filter raw agent CLI output so only conversational text reaches chat
+- Set OUTPUT_FORMATTER=<name> env var in your Sprite image entrypoint
+- Included formatter: "opencode" — strips tool markers, model headers, metadata
+- Formatters live at /usr/local/bin/formatters/<name>.js inside the sidecar
+- Pipeline: agent stdout → tee (Fly logs) → formatter → output-relay.js → webhooks → chat
+- To create a custom formatter: write a Node.js script that reads stdin line-by-line,
+  filters/transforms lines, and writes to stdout. Place at formatters/<name>.js in the sidecar dir.
+- If OUTPUT_FORMATTER is not set, all raw agent output streams to chat (default behavior)
 
 TROUBLESHOOTING:
 LOCAL MODE:
@@ -185,6 +195,7 @@ npm run start:sprite      # Or run locally for development
 | **🔌 Pluggable Architecture** | Easy to add new chat platforms via ChatProvider interface |
 | **☁️ Sprite Cloud Execution** | Run agents in isolated micro-VMs on Fly.io |
 | **💤 Auto-Sleep** | Sprites hibernate when idle, wake on demand (pay only for compute used) |
+| **🔧 Output Formatters** | Optional pipeline filters that extract clean conversational text from raw agent CLI output |
 
 ---
 
@@ -598,6 +609,147 @@ Fly.io Private Network (6PN / WireGuard mesh)
 
 ---
 
+## 🔧 Output Formatters
+
+When Sprites run AI agents, the raw CLI output often includes tool-call markers, model headers, shell command blocks, and metadata alongside the agent's actual conversational response. **Output formatters** are optional pipeline filters that strip this noise so only clean, conversational text reaches your chat channel.
+
+### How It Works
+
+```
+Agent CLI (opencode/claude)
+    │
+    ▼
+  stdout
+    │
+    ├──► tee /dev/stderr (raw output preserved in Fly.io logs)
+    │
+    ▼
+  Formatter (optional — filters lines in real time)
+    │
+    ▼
+  output-relay.js (batches and POSTs to /webhooks/logs)
+    │
+    ▼
+  Open Dispatch → Chat (Slack / Teams / Discord)
+```
+
+Formatters process lines **as they arrive** (streaming mode), so progress updates still flow to chat in real time. They do not buffer the entire output.
+
+### Enabling a Formatter
+
+Set the `OUTPUT_FORMATTER` environment variable in your Sprite image before the sidecar runs:
+
+```bash
+# In your Sprite entrypoint script, before calling sprite-reporter:
+export OUTPUT_FORMATTER=opencode
+exec /usr/local/bin/sprite-reporter
+```
+
+If `OUTPUT_FORMATTER` is not set, the formatter step is skipped entirely and raw output streams through unchanged (the default behavior).
+
+### Included Formatters
+
+#### `opencode` — OpenCode CLI Output Filter
+
+**File:** `sidecar/formatters/opencode.js`
+
+Extracts clean conversational text from [OpenCode](https://opencode.ai) CLI output. Handles two modes:
+
+| Mode | Input | How It Works |
+|------|-------|-------------|
+| **JSON format** | `opencode run --format json -- "task"` | Parses `{"response": "..."}` lines and extracts the text |
+| **Default format** | `opencode run -- "task"` | Heuristic line-by-line filter (see below) |
+
+**What gets stripped (default format):**
+
+| Pattern | Example | Why |
+|---------|---------|-----|
+| Model/build markers | `> build · gemini-3-pro-preview` | Internal metadata |
+| Tool call markers | `→ Read file src/index.js` | Agent tool usage, not conversation |
+| Shell commands | `$ ls -F` + indented output | Command execution output |
+| Log lines | `[workspace-setup] Loading...` | Internal process logs |
+| Metadata | `Tokens: 1234`, `Duration: 5.2s`, `Cost: $0.01` | Session stats |
+
+**What passes through:** Everything else — the agent's actual conversational prose, markdown, code blocks, and explanations.
+
+**Example:**
+
+Raw OpenCode output:
+```
+> build · gemini-2.5-pro
+→ Read file package.json
+→ Read file src/index.js
+This is a Node.js Express application that serves a REST API
+for managing user accounts. It uses PostgreSQL for storage
+and includes JWT authentication.
+Tokens: 3847
+Duration: 12.4s
+```
+
+After `opencode` formatter:
+```
+This is a Node.js Express application that serves a REST API
+for managing user accounts. It uses PostgreSQL for storage
+and includes JWT authentication.
+```
+
+### Writing a Custom Formatter
+
+A formatter is a Node.js script that reads from stdin and writes to stdout. It must process lines **as they arrive** (streaming) — do not buffer all input before producing output, or the webhook relay will starve and jobs will time out.
+
+**Template:**
+
+```javascript
+#!/usr/bin/env node
+'use strict';
+const { createInterface } = require('readline');
+
+const rl = createInterface({
+  input: process.stdin,
+  crlfDelay: Infinity
+});
+
+rl.on('line', (line) => {
+  // Your filtering logic here.
+  // Call process.stdout.write(line + '\n') for lines you want to keep.
+  // Simply return (don't write) for lines you want to strip.
+
+  const trimmed = line.trim();
+
+  // Example: skip lines that start with "DEBUG:"
+  if (/^DEBUG:/.test(trimmed)) return;
+
+  // Pass everything else through
+  process.stdout.write(line + '\n');
+});
+```
+
+**Steps to add a custom formatter:**
+
+1. Create your script at `sidecar/formatters/<name>.js`
+2. The sidecar Dockerfile already copies the entire `formatters/` directory:
+   ```dockerfile
+   COPY formatters/ /sidecar/formatters/
+   ```
+3. Rebuild the sidecar image
+4. Set `OUTPUT_FORMATTER=<name>` in your Sprite environment
+
+**Important rules for formatters:**
+- **Stream, don't buffer.** Process each line in the `rl.on('line')` handler and write immediately. Never collect all lines and process on `close` — this blocks the downstream relay.
+- **Preserve line endings.** Always append `\n` when writing to stdout.
+- **Fail open.** If your filter logic encounters unexpected input, pass it through rather than dropping it. Missing output is worse than extra output.
+- **No side effects.** Formatters should be pure stdin→stdout filters. Don't make HTTP calls, write files, or depend on external state.
+
+### Formatter Quick Reference
+
+| Environment Variable | Value | Effect |
+|---------------------|-------|--------|
+| `OUTPUT_FORMATTER` not set | — | No filtering, raw agent output streams to chat |
+| `OUTPUT_FORMATTER=opencode` | `opencode` | Strips OpenCode tool markers, headers, metadata |
+| `OUTPUT_FORMATTER=myfilter` | `myfilter` | Uses custom `formatters/myfilter.js` |
+
+---
+
 ## ⚡ Deployment
 
 ### Local Mode: Running as a Service
@@ -770,6 +922,8 @@ docker push registry.fly.io/your-sprite-app/agent:latest
 | Sprites can't reach Open Dispatch | Both apps must be in the same Fly.io org (6PN requires same org) |
 | Job timed out | Default timeout is 10 min. Check if agent command is hanging. See Fly logs: `fly logs -a your-sprite-app` |
 | Auth errors on webhooks | Job tokens are per-job HMAC tokens. Check sidecar has `JOB_TOKEN` env var |
+| Formatter not found | Check `OUTPUT_FORMATTER` value matches a file at `/usr/local/bin/formatters/<name>.js`. Rebuild sidecar image. |
+| Job times out with formatter | Formatter must stream line-by-line. If it buffers all input before output, the webhook relay starves. See [Output Formatters](#-output-formatters). |
 
 ---
 
@@ -822,6 +976,8 @@ open-dispatch/
 ├── sidecar/
 │   ├── sprite-reporter.sh      # Sprite entry point (clone, run, report)
 │   ├── output-relay.js         # Buffered stdout → webhook relay
+│   ├── formatters/             # Optional output formatters (set OUTPUT_FORMATTER)
+│   │   └── opencode.js         # OpenCode CLI output → clean conversational text
 │   └── Dockerfile              # Sidecar image for COPY --from=
 ├── tests/
 │   ├── chat-provider.test.js   # Provider architecture tests
@@ -830,7 +986,8 @@ open-dispatch/
 │   ├── sprite-core.test.js     # Sprite core tests
 │   ├── sprite-integration.test.js # Sprite integration tests
 │   ├── sprite-slow.test.js     # Sprite slow/E2E tests
-│   └── webhook-server.test.js  # Webhook server tests
+│   ├── webhook-server.test.js  # Webhook server tests
+│   └── opencode-formatter.test.js # Output formatter tests
 ├── teams-manifest/             # Teams app manifest
 ├── .env.example               # Config template
 ├── OPENCODE_SETUP.md          # OpenCode guide
@@ -848,13 +1005,15 @@ open-dispatch/
 npm test
 ```
 
-156+ tests covering:
+220+ tests covering:
 - Instance lifecycle
 - Output parsing (JSON, ndjson, plaintext)
 - Message chunking
 - Error handling
 - Provider architecture
 - Event handling
+- Sprite orchestration, webhooks, and job tracking
+- Output formatter filtering (JSON extraction, heuristic filtering, streaming)
 
 ---
 
