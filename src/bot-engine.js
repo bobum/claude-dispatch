@@ -38,6 +38,54 @@ function createBotEngine(options) {
   }
 
   // ============================================
+  // OUTPUT FILTERING
+  // ============================================
+
+  /**
+   * Extract only the agent's conversational response from raw CLI output.
+   * Strips tool calls, model markers, and internal output from
+   * OpenCode / Claude Code, returning just the prose response.
+   * @param {string} raw - Full agent output
+   * @returns {string} Filtered response text
+   */
+  function extractAgentResponse(raw) {
+    const lines = raw.split('\n');
+    const filtered = [];
+    let inToolBlock = false;
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+
+      // Skip empty lines at the start
+      if (filtered.length === 0 && !trimmed) continue;
+
+      // Skip OpenCode/Claude Code tool markers and internal output
+      if (/^>\s+\w+\s+·\s+/.test(trimmed)) continue;         // > build · model-name
+      if (/^[→⟶➜]\s+/.test(trimmed)) continue;                // → Read file, → Write file
+      if (/^\$\s+/.test(trimmed)) { inToolBlock = true; continue; } // $ command
+      if (trimmed.startsWith('```') && inToolBlock) {          // End of tool output block
+        inToolBlock = false;
+        continue;
+      }
+      if (inToolBlock) continue;                               // Inside tool output
+      if (/^\[[\w-]+\]\s/.test(trimmed)) continue;            // [workspace-setup] log lines
+      if (/^Tokens:/.test(trimmed)) continue;                  // Tokens: 1234 in / 567 out
+      if (/^Duration:/.test(trimmed)) continue;                // Duration: 12.3s
+      if (/^Cost:/.test(trimmed)) continue;                    // Cost: $0.01
+
+      inToolBlock = false;
+      filtered.push(line);
+    }
+
+    // Trim trailing empty lines
+    while (filtered.length > 0 && !filtered[filtered.length - 1].trim()) {
+      filtered.pop();
+    }
+
+    return filtered.join('\n').trim();
+  }
+
+  // ============================================
   // MESSAGE BATCHER (rate-limit protection)
   // ============================================
 
@@ -329,9 +377,10 @@ function createBotEngine(options) {
 
     aiBackend.stopInstance(instanceId);
 
-    // Send accumulated output
+    // Send only the agent's conversational response, filtering out
+    // tool calls and internal markers from OpenCode/Claude Code output
     if (result.responses && result.responses.length > 0) {
-      const output = result.responses.join('\n').trim();
+      const output = extractAgentResponse(result.responses.join('\n'));
       if (output) {
         await chatProvider.sendLongMessage(ctx.channelId, output);
       }
